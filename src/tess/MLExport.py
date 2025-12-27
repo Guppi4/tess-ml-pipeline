@@ -20,12 +20,14 @@ from typing import List, Dict, Optional, Tuple
 from scipy import stats
 from astropy.timeseries import LombScargle
 
-from .config import BASE_DIR, ensure_directories
+from .config import BASE_DIR, ensure_directories, get_exports_dir
 from .LightcurveBuilder import Lightcurve, LightcurveCollection
 
 
-# Output directory
-ML_DATA_DIR = BASE_DIR / "ml_data"
+# Output directory (new structure: data/exports/)
+ML_DATA_DIR = get_exports_dir()
+# Legacy path for backwards compatibility
+LEGACY_ML_DATA_DIR = BASE_DIR / "ml_data"
 
 
 def ensure_ml_directories():
@@ -33,6 +35,8 @@ def ensure_ml_directories():
     ML_DATA_DIR.mkdir(parents=True, exist_ok=True)
     (ML_DATA_DIR / "features").mkdir(exist_ok=True)
     (ML_DATA_DIR / "timeseries").mkdir(exist_ok=True)
+    # Also ensure legacy for backwards compatibility
+    LEGACY_ML_DATA_DIR.mkdir(parents=True, exist_ok=True)
 
 
 class FeatureExtractor:

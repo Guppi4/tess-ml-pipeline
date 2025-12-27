@@ -193,18 +193,28 @@ class ProgressDisplay:
 from .config import (
     BASE_DIR, PHOTOMETRY_RESULTS_DIR, MANIFEST_DIR,
     MAST_FFI_BASE_URL, DAOFIND_FWHM, DAOFIND_THRESHOLD_SIGMA,
-    DEFAULT_APERTURE_RADIUS, ANNULUS_R_IN, ANNULUS_R_OUT, ensure_directories
+    DEFAULT_APERTURE_RADIUS, ANNULUS_R_IN, ANNULUS_R_OUT,
+    ensure_directories, get_tess_sector_dir, ensure_tess_sector_dir
 )
 
 
-# Streaming results directory
-STREAMING_DIR = BASE_DIR / "streaming_results"
+# Legacy streaming results directory (for backwards compatibility)
+LEGACY_STREAMING_DIR = BASE_DIR / "streaming_results"
 
 
-def ensure_streaming_dirs():
+def get_output_dir(sector: int, camera: int, ccd: int) -> Path:
+    """Get output directory for streaming results."""
+    return get_tess_sector_dir(sector, camera, ccd)
+
+
+def ensure_streaming_dirs(sector: int = None, camera: int = None, ccd: int = None):
     """Create streaming directories."""
-    STREAMING_DIR.mkdir(parents=True, exist_ok=True)
-    (STREAMING_DIR / "checkpoints").mkdir(exist_ok=True)
+    if sector is not None and camera is not None and ccd is not None:
+        output_dir = ensure_tess_sector_dir(sector, camera, ccd)
+        (output_dir / "checkpoints").mkdir(exist_ok=True)
+    # Also ensure legacy dir for backwards compatibility
+    LEGACY_STREAMING_DIR.mkdir(parents=True, exist_ok=True)
+    (LEGACY_STREAMING_DIR / "checkpoints").mkdir(exist_ok=True)
 
 
 class StreamingProcessor:
@@ -222,6 +232,9 @@ class StreamingProcessor:
 
         self.session_id = f"s{sector:04d}_{camera}-{ccd}"
 
+        # Output directory (new structure: data/tess/sector_XXX/camY_ccdZ/)
+        self.output_dir = get_output_dir(sector, int(camera), int(ccd))
+
         # Results storage
         self.star_catalog = {}  # star_id -> {ra, dec, ...}
         self.photometry_records = []  # List of measurement records
@@ -232,16 +245,30 @@ class StreamingProcessor:
         self.reference_stars = None
         self.reference_epoch_idx = None
 
-        # Checkpoint
-        self.checkpoint_path = STREAMING_DIR / "checkpoints" / f"{self.session_id}_checkpoint.json"
+        # Checkpoint path (new location)
+        self.checkpoint_path = self.output_dir / "checkpoints" / f"{self.session_id}_checkpoint.json"
+        # Legacy checkpoint path for loading old data
+        self._legacy_checkpoint_path = LEGACY_STREAMING_DIR / "checkpoints" / f"{self.session_id}_checkpoint.json"
 
-        ensure_streaming_dirs()
+        ensure_streaming_dirs(sector, int(camera), int(ccd))
 
     def load_checkpoint(self) -> bool:
         """Load previous progress if exists."""
+        # Check new path first, then legacy
+        checkpoint_path = None
+        data_dir = None
+
         if self.checkpoint_path.exists():
+            checkpoint_path = self.checkpoint_path
+            data_dir = self.output_dir
+        elif self._legacy_checkpoint_path.exists():
+            checkpoint_path = self._legacy_checkpoint_path
+            data_dir = LEGACY_STREAMING_DIR
+            print(f"  (Loading from legacy location)")
+
+        if checkpoint_path:
             try:
-                with open(self.checkpoint_path, 'r') as f:
+                with open(checkpoint_path, 'r') as f:
                     data = json.load(f)
 
                 self.processed_files = set(data.get('processed_files', []))
@@ -250,8 +277,8 @@ class StreamingProcessor:
                 self.reference_epoch_idx = data.get('reference_epoch_idx')
 
                 # Load photometry from CSV (fallback to parquet for old checkpoints)
-                csv_path = STREAMING_DIR / f"{self.session_id}_photometry_checkpoint.csv"
-                parquet_path = STREAMING_DIR / f"{self.session_id}_photometry.parquet"
+                csv_path = data_dir / f"{self.session_id}_photometry_checkpoint.csv"
+                parquet_path = data_dir / f"{self.session_id}_photometry.parquet"
 
                 if csv_path.exists():
                     df = pd.read_csv(csv_path)
@@ -287,13 +314,16 @@ class StreamingProcessor:
             'last_update': datetime.now().isoformat()
         }
 
+        # Ensure checkpoint directory exists
+        self.checkpoint_path.parent.mkdir(parents=True, exist_ok=True)
+
         with open(self.checkpoint_path, 'w') as f:
             json.dump(checkpoint_data, f, indent=2, default=str)
 
         # Save photometry to CSV (no external dependencies)
         if self.photometry_records:
             df = pd.DataFrame(self.photometry_records)
-            csv_path = STREAMING_DIR / f"{self.session_id}_photometry_checkpoint.csv"
+            csv_path = self.output_dir / f"{self.session_id}_photometry_checkpoint.csv"
             df.to_csv(csv_path, index=False)
 
     def get_sector_files(self) -> List[Dict]:
@@ -1044,7 +1074,7 @@ class StreamingProcessor:
     def _finalize(self) -> Dict:
         """Create final output files."""
         # Save star catalog
-        catalog_path = STREAMING_DIR / f"{self.session_id}_catalog.json"
+        catalog_path = self.output_dir / f"{self.session_id}_catalog.json"
         with open(catalog_path, 'w') as f:
             json.dump({
                 'n_stars': len(self.star_catalog),
@@ -1053,12 +1083,12 @@ class StreamingProcessor:
             }, f, indent=2, default=str)
 
         # Save photometry as CSV
-        csv_path = STREAMING_DIR / f"{self.session_id}_photometry.csv"
+        csv_path = self.output_dir / f"{self.session_id}_photometry.csv"
         df = pd.DataFrame(self.photometry_records)
         df.to_csv(csv_path, index=False)
 
         # Try to save as parquet if pyarrow is available (more compact)
-        parquet_path = STREAMING_DIR / f"{self.session_id}_photometry.parquet"
+        parquet_path = self.output_dir / f"{self.session_id}_photometry.parquet"
         try:
             df.to_parquet(parquet_path, index=False)
         except ImportError:
@@ -1066,7 +1096,7 @@ class StreamingProcessor:
 
         # Create summary
         summary = self._create_summary()
-        summary_path = STREAMING_DIR / f"{self.session_id}_summary.json"
+        summary_path = self.output_dir / f"{self.session_id}_summary.json"
         with open(summary_path, 'w') as f:
             json.dump(summary, f, indent=2, default=str)
 
@@ -1074,14 +1104,14 @@ class StreamingProcessor:
         if hasattr(self, 'display') and self.display:
             data_size = csv_path.stat().st_size / 1024 / 1024
             self.display.show_summary(
-                output_dir=STREAMING_DIR,
+                output_dir=self.output_dir,
                 catalog_file=catalog_path.name,
                 data_file=csv_path.name,
                 data_size_mb=data_size
             )
         else:
             # Fallback simple output
-            print(f"\n  Results saved to: {STREAMING_DIR}")
+            print(f"\n  Results saved to: {self.output_dir}")
             print(f"    Stars: {len(self.star_catalog):,}")
             print(f"    Epochs: {len(self.epoch_metadata):,}")
 
@@ -1167,45 +1197,69 @@ def get_streaming_results(sector: int, camera: str = "1", ccd: str = "1") -> Tup
     """
     Load results from a completed or in-progress streaming run.
 
+    Checks both new data structure (data/tess/sector_XXX/camY_ccdZ/)
+    and legacy location (streaming_results/) for backwards compatibility.
+
     Returns:
         Tuple of (photometry_df, catalog_dict)
     """
     session_id = f"s{sector:04d}_{camera}-{ccd}"
 
-    # Try multiple file locations (final, checkpoint)
-    csv_path = STREAMING_DIR / f"{session_id}_photometry.csv"
-    checkpoint_csv = STREAMING_DIR / f"{session_id}_photometry_checkpoint.csv"
-    parquet_path = STREAMING_DIR / f"{session_id}_photometry.parquet"
+    # New data structure path
+    new_dir = get_output_dir(sector, int(camera), int(ccd))
 
-    catalog_path = STREAMING_DIR / f"{session_id}_catalog.json"
-    checkpoint_json = STREAMING_DIR / "checkpoints" / f"{session_id}_checkpoint.json"
+    # Try multiple file locations (new path first, then legacy, final then checkpoint)
+    paths_to_try = [
+        # New structure
+        (new_dir / f"{session_id}_photometry.csv", "csv"),
+        (new_dir / f"{session_id}_photometry_checkpoint.csv", "csv"),
+        (new_dir / f"{session_id}_photometry.parquet", "parquet"),
+        # Legacy structure
+        (LEGACY_STREAMING_DIR / f"{session_id}_photometry.csv", "csv"),
+        (LEGACY_STREAMING_DIR / f"{session_id}_photometry_checkpoint.csv", "csv"),
+        (LEGACY_STREAMING_DIR / f"{session_id}_photometry.parquet", "parquet"),
+    ]
 
-    # Load photometry data
-    if csv_path.exists():
-        df = pd.read_csv(csv_path)
-    elif checkpoint_csv.exists():
-        df = pd.read_csv(checkpoint_csv)
-        print(f"  Using checkpoint data: {checkpoint_csv.name}")
-    elif parquet_path.exists():
-        df = pd.read_parquet(parquet_path)
-    else:
+    df = None
+    data_dir = None
+    for path, fmt in paths_to_try:
+        if path.exists():
+            if fmt == "csv":
+                df = pd.read_csv(path)
+            else:
+                df = pd.read_parquet(path)
+            data_dir = path.parent
+            if "checkpoint" in path.name:
+                print(f"  Using checkpoint data: {path}")
+            break
+
+    if df is None:
         raise FileNotFoundError(f"No results found for {session_id}")
 
-    # Load catalog
-    if catalog_path.exists():
-        with open(catalog_path, 'r') as f:
-            catalog = json.load(f)
-    elif checkpoint_json.exists():
-        with open(checkpoint_json, 'r') as f:
-            checkpoint = json.load(f)
-        # Build catalog structure from checkpoint
-        catalog = {
-            'n_stars': len(checkpoint.get('star_catalog', {})),
-            'n_epochs': len(checkpoint.get('epoch_metadata', [])),
-            'stars': checkpoint.get('star_catalog', {})
-        }
-        print(f"  Using checkpoint catalog: {checkpoint_json.name}")
-    else:
+    # Load catalog (check new path first, then legacy)
+    catalog_paths = [
+        (data_dir / f"{session_id}_catalog.json", "catalog"),
+        (data_dir / "checkpoints" / f"{session_id}_checkpoint.json", "checkpoint"),
+    ]
+
+    catalog = None
+    for path, cat_type in catalog_paths:
+        if path.exists():
+            with open(path, 'r') as f:
+                data = json.load(f)
+            if cat_type == "catalog":
+                catalog = data
+            else:
+                # Build catalog structure from checkpoint
+                catalog = {
+                    'n_stars': len(data.get('star_catalog', {})),
+                    'n_epochs': len(data.get('epoch_metadata', [])),
+                    'stars': data.get('star_catalog', {})
+                }
+                print(f"  Using checkpoint catalog: {path}")
+            break
+
+    if catalog is None:
         raise FileNotFoundError(f"No catalog found for {session_id}")
 
     return df, catalog
