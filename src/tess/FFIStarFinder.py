@@ -21,7 +21,7 @@ from photutils.aperture import CircularAperture, aperture_photometry
 from photutils.detection import DAOStarFinder
 from tqdm import tqdm
 
-from config import (
+from .config import (
     PHOTOMETRY_RESULTS_DIR,
     DAOFIND_FWHM,
     DAOFIND_THRESHOLD_SIGMA,
@@ -360,8 +360,16 @@ def find_stars(fits_files, data_arrays, means, medians, stds):
             w = WCS(hdu[1].header)
             positions = list(zip(sources['xcentroid'], sources['ycentroid']))
             world_coords = w.all_pix2world(positions, 0)
-            phot_table['ra'] = world_coords[:, 0]
-            phot_table['dec'] = world_coords[:, 1]
+            ra_vals = world_coords[:, 0]
+            dec_vals = world_coords[:, 1]
+
+            # Check for NaN values (WCS can return NaN without exception)
+            valid_mask = ~np.isnan(ra_vals) & ~np.isnan(dec_vals)
+            if not np.all(valid_mask):
+                print(f"  Warning: {np.sum(~valid_mask)} sources have invalid WCS coordinates")
+
+            phot_table['ra'] = ra_vals
+            phot_table['dec'] = dec_vals
 
         # Calculate flux and errors
         phot_table = calculate_flux(phot_table, exposure_time)

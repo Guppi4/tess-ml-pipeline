@@ -190,7 +190,7 @@ class ProgressDisplay:
             print(f"  ⚠ {len(self.errors)} files had errors (see log for details)")
 
 
-from config import (
+from .config import (
     BASE_DIR, PHOTOMETRY_RESULTS_DIR, MANIFEST_DIR,
     MAST_FFI_BASE_URL, DAOFIND_FWHM, DAOFIND_THRESHOLD_SIGMA,
     DEFAULT_APERTURE_RADIUS, ANNULUS_R_IN, ANNULUS_R_OUT, ensure_directories
@@ -392,23 +392,49 @@ class StreamingProcessor:
             header0 = hdu[0].header
             header1 = hdu[1].header
 
-            # Extract metadata
+            # Extract metadata - check both headers for SECTOR/CAMERA/CCD
+            # TESS FFIs may have these in either primary or extension header
+            sector = header0.get('SECTOR', header1.get('SECTOR', 0))
+            camera = header0.get('CAMERA', header1.get('CAMERA', 0))
+            ccd = header0.get('CCD', header1.get('CCD', 0))
+
+            # Use self.sector/camera/ccd as fallback if headers don't have them
+            if sector == 0:
+                sector = self.sector
+            if camera == 0:
+                camera = int(self.camera)
+            if ccd == 0:
+                ccd = int(self.ccd)
+
             metadata = {
                 'filename': file_info['filename'],
                 'date_obs': header0.get('DATE-OBS', ''),
                 'tstart': header0.get('TSTART', 0),
                 'tstop': header0.get('TSTOP', 0),
-                'sector': header0.get('SECTOR', 0),
-                'camera': header0.get('CAMERA', 0),
-                'ccd': header0.get('CCD', 0),
+                'sector': sector,
+                'camera': camera,
+                'ccd': ccd,
             }
 
-            # Calculate MJD
-            if metadata['date_obs']:
-                try:
-                    metadata['mjd_obs'] = Time(metadata['date_obs'], format='isot', scale='utc').mjd
-                except:
-                    metadata['mjd_obs'] = None
+            # Calculate time - use BTJD mid-time (scientifically correct for TESS)
+            # BTJD = BJD - 2457000.0 (Barycentric TESS Julian Date)
+            # TSTART/TSTOP are already in BTJD
+            if metadata['tstart'] > 0 and metadata['tstop'] > 0:
+                btjd_mid = (metadata['tstart'] + metadata['tstop']) / 2
+                metadata['btjd_mid'] = btjd_mid
+                metadata['bjd_mid'] = btjd_mid + 2457000.0  # Full BJD for reference
+            else:
+                # Fallback to UTC MJD if BTJD not available
+                if metadata['date_obs']:
+                    try:
+                        metadata['btjd_mid'] = Time(metadata['date_obs'], format='isot', scale='utc').mjd - 2457000.0
+                        metadata['bjd_mid'] = metadata['btjd_mid'] + 2457000.0
+                    except:
+                        metadata['btjd_mid'] = None
+                        metadata['bjd_mid'] = None
+                else:
+                    metadata['btjd_mid'] = None
+                    metadata['bjd_mid'] = None
 
             # TESS TSTART/TSTOP are in BTJD (days), need seconds for flux calculation
             # Use EXPOSURE header if available (already in seconds), otherwise convert
@@ -561,7 +587,7 @@ class StreamingProcessor:
             record = {
                 'star_id': star_id,
                 'epoch': epoch_idx,
-                'mjd': metadata.get('mjd_obs'),
+                'mjd': metadata.get('btjd_mid'),  # BTJD mid-time
                 'flux': float(flux),
                 'flux_error': float(flux_error),
                 'quality': int(quality),
@@ -590,6 +616,9 @@ class StreamingProcessor:
                 try:
                     pixel_coords = wcs.all_world2pix([[ra, dec]], 0)
                     x, y = pixel_coords[0]
+                    # Check for NaN (WCS can return NaN without exception)
+                    if np.isnan(x) or np.isnan(y):
+                        x, y = star_info['ref_x'], star_info['ref_y']
                 except:
                     # Fall back to reference position
                     x, y = star_info['ref_x'], star_info['ref_y']
@@ -601,7 +630,7 @@ class StreamingProcessor:
                 record = {
                     'star_id': star_id,
                     'epoch': epoch_idx,
-                    'mjd': metadata.get('mjd_obs'),
+                    'mjd': metadata.get('btjd_mid'),  # BTJD mid-time
                     'flux': np.nan,
                     'flux_error': np.nan,
                     'quality': 3,  # Outside image
@@ -653,7 +682,7 @@ class StreamingProcessor:
             record = {
                 'star_id': star_id,
                 'epoch': epoch_idx,
-                'mjd': metadata.get('mjd_obs'),
+                'mjd': metadata.get('btjd_mid'),  # BTJD mid-time
                 'flux': float(flux),
                 'flux_error': float(flux_error),
                 'quality': int(quality),
@@ -1224,9 +1253,9 @@ def convert_to_starcatalog(sector: int, camera: str = "1", ccd: str = "1"):
 
     catalog.n_stars = len(catalog.stars)
 
-    # Build epochs list
+    # Build epochs list (mjd column now contains BTJD mid-time)
     epochs = df.groupby('epoch')['mjd'].first().to_dict()
-    catalog.epochs = [{'metadata': {'mjd_obs': mjd}} for mjd in sorted(epochs.values())]
+    catalog.epochs = [{'metadata': {'btjd_mid': mjd, 'mjd_obs': mjd}} for mjd in sorted(epochs.values())]
 
     print(f"Converted to StarCatalog: {catalog.n_stars} stars, {len(catalog.epochs)} epochs")
 

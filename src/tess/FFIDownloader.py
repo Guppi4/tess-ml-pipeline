@@ -17,7 +17,7 @@ from astropy.io import fits
 from astropy.time import Time
 from typing import List, Dict, Optional, Tuple
 
-from config import FITS_DIR, MANIFEST_DIR, MAST_FFI_BASE_URL, ensure_directories
+from .config import FITS_DIR, MANIFEST_DIR, MAST_FFI_BASE_URL, ensure_directories
 
 
 # =============================================================================

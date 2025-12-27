@@ -443,8 +443,8 @@ def cmd_download(args):
 
 def cmd_process(args):
     """Handle process (streaming) command."""
-    from StreamingPipeline import run_streaming_pipeline
-    from SectorAnalyzer import quick_check
+    from .StreamingPipeline import run_streaming_pipeline
+    from .SectorAnalyzer import quick_check
 
     if args.check_quality:
         print(f"\nChecking sector {args.sector} quality...")
@@ -484,7 +484,7 @@ def cmd_process(args):
 def cmd_calibrate(args):
     """Handle calibrate command."""
     import FFICalibrate as cffi
-    from config import FITS_DIR, CALIBRATED_DATA_DIR
+    from .config import FITS_DIR, CALIBRATED_DATA_DIR
 
     fits_files = sorted(FITS_DIR.glob('*.fits'))
 
@@ -510,9 +510,9 @@ def cmd_calibrate(args):
 
 def cmd_catalog(args):
     """Handle catalog command."""
-    from StreamingPipeline import convert_to_starcatalog, STREAMING_DIR
-    from StarCatalog import build_star_catalog, StarCatalog
-    from config import CALIBRATED_DATA_DIR, PHOTOMETRY_RESULTS_DIR
+    from .StreamingPipeline import convert_to_starcatalog, STREAMING_DIR
+    from .StarCatalog import build_star_catalog, StarCatalog
+    from .config import CALIBRATED_DATA_DIR, PHOTOMETRY_RESULTS_DIR
 
     # Auto-detect source
     has_streaming = False
@@ -570,9 +570,9 @@ def cmd_catalog(args):
 
 def cmd_lightcurves(args):
     """Handle lightcurves command."""
-    from StarCatalog import StarCatalog
-    from LightcurveBuilder import LightcurveCollection
-    from config import PHOTOMETRY_RESULTS_DIR
+    from .StarCatalog import StarCatalog
+    from .LightcurveBuilder import LightcurveCollection
+    from .config import PHOTOMETRY_RESULTS_DIR
 
     catalog_path = PHOTOMETRY_RESULTS_DIR / 'star_catalog.json'
 
@@ -674,10 +674,10 @@ def cmd_lightcurves(args):
 
 def cmd_export(args):
     """Handle export command."""
-    from StarCatalog import StarCatalog
-    from LightcurveBuilder import LightcurveCollection
-    from MLExport import MLDataset, export_for_ml
-    from config import PHOTOMETRY_RESULTS_DIR
+    from .StarCatalog import StarCatalog
+    from .LightcurveBuilder import LightcurveCollection
+    from .MLExport import MLDataset, export_for_ml
+    from .config import PHOTOMETRY_RESULTS_DIR
 
     catalog_path = PHOTOMETRY_RESULTS_DIR / 'star_catalog.json'
 
@@ -730,7 +730,7 @@ def cmd_fix_coords(args):
     print("=" * 60)
     print()
 
-    from StreamingPipeline import STREAMING_DIR
+    from .StreamingPipeline import STREAMING_DIR
 
     # Find existing data
     checkpoint_files = list((STREAMING_DIR / "checkpoints").glob("*.json")) if STREAMING_DIR.exists() else []
@@ -837,7 +837,7 @@ def cmd_fix_coords(args):
     # Add TIC if requested
     if args.add_tic:
         print("\nAdding TIC IDs (this will take ~1-2 hours)...")
-        from StreamingPipeline import StreamingProcessor
+        from .StreamingPipeline import StreamingProcessor
 
         processor = StreamingProcessor(sector, str(camera), str(ccd))
         processor.star_catalog = stars
@@ -853,8 +853,8 @@ def cmd_fix_coords(args):
 
 def cmd_status(args):
     """Handle status command."""
-    from config import FITS_DIR, CALIBRATED_DATA_DIR, PHOTOMETRY_RESULTS_DIR, MANIFEST_DIR, BASE_DIR
-    from StreamingPipeline import STREAMING_DIR
+    from .config import FITS_DIR, CALIBRATED_DATA_DIR, PHOTOMETRY_RESULTS_DIR, MANIFEST_DIR, BASE_DIR
+    from .StreamingPipeline import STREAMING_DIR
 
     print("\n" + "=" * 60)
     print("  TESS Pipeline Status")
@@ -929,7 +929,7 @@ def cmd_interactive(args):
 
 def cmd_find_variables(args):
     """Find variable stars in photometry data."""
-    from VariableStarFinder import VariableStarFinder
+    from .VariableStarFinder import VariableStarFinder
 
     finder = VariableStarFinder(args.sector, args.camera, args.ccd)
 
@@ -997,7 +997,7 @@ def main():
     sys.path.insert(0, str(script_dir))
 
     # Ensure directories exist
-    from config import ensure_directories
+    from .config import ensure_directories
     ensure_directories()
 
     # Dispatch to command handler

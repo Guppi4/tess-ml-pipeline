@@ -1,9 +1,9 @@
 import sys
 from PyQt5.QtWidgets import QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit, QPushButton, QMessageBox, QProgressBar
 from PyQt5.QtCore import Qt
-import FFIDownloader as dffi
-import FFICalibrate as cffi
-import FFIStarFinder as sffi
+from . import FFIDownloader as dffi
+from . import FFICalibrate as cffi
+from . import FFIStarFinder as sffi
 # FFILcCreator was removed - use LightcurveBuilder instead
 # import FFILcCreator as lffi
 import os

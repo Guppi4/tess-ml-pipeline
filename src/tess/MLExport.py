@@ -20,8 +20,8 @@ from typing import List, Dict, Optional, Tuple
 from scipy import stats
 from astropy.timeseries import LombScargle
 
-from config import BASE_DIR, ensure_directories
-from LightcurveBuilder import Lightcurve, LightcurveCollection
+from .config import BASE_DIR, ensure_directories
+from .LightcurveBuilder import Lightcurve, LightcurveCollection
 
 
 # Output directory

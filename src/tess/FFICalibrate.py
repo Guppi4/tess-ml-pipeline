@@ -13,7 +13,7 @@ from astropy.wcs import WCS
 from tqdm import tqdm
 from datetime import datetime
 
-from config import CALIBRATED_DATA_DIR, SIGMA_CLIP_VALUE, ensure_directories
+from .config import CALIBRATED_DATA_DIR, SIGMA_CLIP_VALUE, ensure_directories
 
 
 def extract_fits_metadata(fits_file: str, hdu) -> dict:

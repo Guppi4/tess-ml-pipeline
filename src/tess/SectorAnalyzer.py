@@ -16,7 +16,7 @@ from typing import Dict, List, Tuple, Optional
 from dataclasses import dataclass
 import json
 
-from config import MAST_FFI_BASE_URL, MANIFEST_DIR, ensure_directories
+from .config import MAST_FFI_BASE_URL, MANIFEST_DIR, ensure_directories
 
 
 @dataclass

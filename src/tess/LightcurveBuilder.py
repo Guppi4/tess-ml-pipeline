@@ -15,8 +15,8 @@ import matplotlib.pyplot as plt
 from scipy import stats
 from pathlib import Path
 
-from config import LIGHTCURVES_DIR, MIN_EPOCHS_FOR_STAR, ensure_directories
-from StarCatalog import StarCatalog
+from .config import LIGHTCURVES_DIR, MIN_EPOCHS_FOR_STAR, ensure_directories
+from .StarCatalog import StarCatalog
 
 
 class Lightcurve:

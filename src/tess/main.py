@@ -14,12 +14,12 @@ Features:
 import os
 import json
 
-from config import (
+from .config import (
     FITS_DIR, CALIBRATED_DATA_DIR, PHOTOMETRY_RESULTS_DIR,
     MANIFEST_DIR, ensure_directories
 )
-import FFIDownloader as dffi
-import FFICalibrate as cffi
+from . import FFIDownloader as dffi
+from . import FFICalibrate as cffi
 
 
 def clear_screen():

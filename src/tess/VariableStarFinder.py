@@ -16,10 +16,10 @@ from typing import Dict, List, Optional, Tuple
 from tqdm import tqdm
 import time
 
-from config import BASE_DIR
-from StreamingPipeline import convert_to_starcatalog, get_streaming_results, STREAMING_DIR
-from LightcurveBuilder import Lightcurve, LightcurveCollection
-from MLExport import FeatureExtractor
+from .config import BASE_DIR
+from .StreamingPipeline import convert_to_starcatalog, get_streaming_results, STREAMING_DIR
+from .LightcurveBuilder import Lightcurve, LightcurveCollection
+from .MLExport import FeatureExtractor
 
 
 # Output directory

@@ -19,7 +19,7 @@ from photutils.detection import DAOStarFinder
 from photutils.aperture import CircularAperture, CircularAnnulus, aperture_photometry
 from tqdm import tqdm
 
-from config import (
+from .config import (
     CALIBRATED_DATA_DIR,
     PHOTOMETRY_RESULTS_DIR,
     DAOFIND_FWHM,
@@ -31,7 +31,7 @@ from config import (
     MIN_EPOCHS_FOR_STAR,
     ensure_directories
 )
-from FFICalibrate import load_calibration, load_epoch_data
+from .FFICalibrate import load_calibration, load_epoch_data
 
 
 class StarCatalog:
@@ -85,8 +85,16 @@ class StarCatalog:
 
                 positions = list(zip(df['xcentroid'], df['ycentroid']))
                 world_coords = wcs.all_pix2world(positions, 0)
-                df['ra'] = world_coords[:, 0]
-                df['dec'] = world_coords[:, 1]
+                ra_vals = world_coords[:, 0]
+                dec_vals = world_coords[:, 1]
+
+                # Check for NaN values (WCS can return NaN without exception)
+                valid_mask = ~np.isnan(ra_vals) & ~np.isnan(dec_vals)
+                if not np.all(valid_mask):
+                    print(f"  Warning: {np.sum(~valid_mask)} sources have invalid WCS coordinates")
+
+                df['ra'] = ra_vals
+                df['dec'] = dec_vals
             except Exception as e:
                 print(f"WCS conversion failed: {e}")
                 df['ra'] = np.nan
@@ -241,6 +249,9 @@ class StarCatalog:
             try:
                 pixel_coords = wcs.all_world2pix([[ra, dec]], 0)
                 x, y = pixel_coords[0]
+                # Check for NaN (WCS can return NaN without exception)
+                if np.isnan(x) or np.isnan(y):
+                    raise ValueError("WCS returned NaN")
             except Exception as e:
                 results[star_id] = {
                     'flux': np.nan,
