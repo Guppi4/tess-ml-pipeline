@@ -510,17 +510,24 @@ def cmd_calibrate(args):
 
 def cmd_catalog(args):
     """Handle catalog command."""
-    from .StreamingPipeline import convert_to_starcatalog, STREAMING_DIR
+    from .StreamingPipeline import convert_to_starcatalog, LEGACY_STREAMING_DIR, get_output_dir
     from .StarCatalog import build_star_catalog, StarCatalog
-    from .config import CALIBRATED_DATA_DIR, PHOTOMETRY_RESULTS_DIR
+    from .config import CALIBRATED_DATA_DIR, PHOTOMETRY_RESULTS_DIR, DATA_DIR
 
-    # Auto-detect source
+    # Auto-detect source - check both new and legacy locations
     has_streaming = False
     has_calibrated = (CALIBRATED_DATA_DIR / 'calibration_metadata.json').exists()
 
-    if STREAMING_DIR.exists():
-        streaming_files = list(STREAMING_DIR.glob("*_photometry*.csv"))
-        has_streaming = len(streaming_files) > 0
+    streaming_files = []
+    # Check new data structure
+    tess_dir = DATA_DIR / "tess"
+    if tess_dir.exists():
+        streaming_files = list(tess_dir.glob("**/*_photometry*.csv"))
+    # Also check legacy location
+    if LEGACY_STREAMING_DIR.exists():
+        streaming_files.extend(LEGACY_STREAMING_DIR.glob("*_photometry*.csv"))
+
+    has_streaming = len(streaming_files) > 0
 
     source = args.source
     if source == 'auto':
@@ -537,7 +544,6 @@ def cmd_catalog(args):
     if source == 'streaming':
         if not args.sector:
             # Try to detect from files
-            streaming_files = list(STREAMING_DIR.glob("*_photometry*.csv"))
             if streaming_files:
                 filename = streaming_files[0].stem
                 parts = filename.replace("_photometry_checkpoint", "").replace("_photometry", "").split("_")
@@ -730,10 +736,16 @@ def cmd_fix_coords(args):
     print("=" * 60)
     print()
 
-    from .StreamingPipeline import STREAMING_DIR
+    from .StreamingPipeline import LEGACY_STREAMING_DIR, get_output_dir
+    from .config import DATA_DIR
 
-    # Find existing data
-    checkpoint_files = list((STREAMING_DIR / "checkpoints").glob("*.json")) if STREAMING_DIR.exists() else []
+    # Find existing data - check both new and legacy paths
+    checkpoint_files = []
+    tess_dir = DATA_DIR / "tess"
+    if tess_dir.exists():
+        checkpoint_files.extend(tess_dir.glob("**/checkpoints/*.json"))
+    if LEGACY_STREAMING_DIR.exists():
+        checkpoint_files.extend((LEGACY_STREAMING_DIR / "checkpoints").glob("*.json"))
 
     if not checkpoint_files:
         print("No existing data found. Run 'tess-ffi process' first.")
@@ -744,8 +756,14 @@ def cmd_fix_coords(args):
         sector = args.sector
         camera = int(args.camera)
         ccd = int(args.ccd)
-        checkpoint_path = STREAMING_DIR / "checkpoints" / f"s{sector:04d}_{args.camera}-{args.ccd}_checkpoint.json"
-        if not checkpoint_path.exists():
+        # Check new path first
+        new_checkpoint = get_output_dir(sector, camera, ccd) / "checkpoints" / f"s{sector:04d}_{args.camera}-{args.ccd}_checkpoint.json"
+        legacy_checkpoint = LEGACY_STREAMING_DIR / "checkpoints" / f"s{sector:04d}_{args.camera}-{args.ccd}_checkpoint.json"
+        if new_checkpoint.exists():
+            checkpoint_path = new_checkpoint
+        elif legacy_checkpoint.exists():
+            checkpoint_path = legacy_checkpoint
+        else:
             print(f"No checkpoint found for sector {sector}")
             return
     else:
@@ -853,8 +871,8 @@ def cmd_fix_coords(args):
 
 def cmd_status(args):
     """Handle status command."""
-    from .config import FITS_DIR, CALIBRATED_DATA_DIR, PHOTOMETRY_RESULTS_DIR, MANIFEST_DIR, BASE_DIR
-    from .StreamingPipeline import STREAMING_DIR
+    from .config import FITS_DIR, CALIBRATED_DATA_DIR, PHOTOMETRY_RESULTS_DIR, MANIFEST_DIR, BASE_DIR, DATA_DIR
+    from .StreamingPipeline import LEGACY_STREAMING_DIR
 
     print("\n" + "=" * 60)
     print("  TESS Pipeline Status")
@@ -867,11 +885,21 @@ def cmd_status(args):
         total_size = sum(f.stat().st_size for f in fits_files) / (1024**3)
         print(f"   Total size: {total_size:.2f} GB")
 
-    # Streaming results
+    # Streaming results - check both new and legacy paths
     print(f"\n2. Streaming Results:")
-    if STREAMING_DIR.exists():
-        checkpoints = list(STREAMING_DIR.glob("*_photometry*.csv"))
-        summaries = list(STREAMING_DIR.glob("*_summary.json"))
+    checkpoints = []
+    summaries = []
+    # Check new data structure
+    tess_dir = DATA_DIR / "tess"
+    if tess_dir.exists():
+        checkpoints.extend(tess_dir.glob("**/*_photometry*.csv"))
+        summaries.extend(tess_dir.glob("**/*_summary.json"))
+    # Also check legacy location
+    if LEGACY_STREAMING_DIR.exists():
+        checkpoints.extend(LEGACY_STREAMING_DIR.glob("*_photometry*.csv"))
+        summaries.extend(LEGACY_STREAMING_DIR.glob("*_summary.json"))
+
+    if checkpoints or summaries:
         print(f"   Data files: {len(checkpoints)}")
         print(f"   Completed runs: {len(summaries)}")
 

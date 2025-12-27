@@ -60,8 +60,9 @@ def print_main_menu():
 
 def streaming_menu():
     """Streaming mode - process on-the-fly without storing raw files."""
-    from .StreamingPipeline import run_streaming_pipeline, get_streaming_results, STREAMING_DIR
+    from .StreamingPipeline import run_streaming_pipeline, get_streaming_results, LEGACY_STREAMING_DIR
     from .SectorAnalyzer import get_sector_quality, compare_sectors, quick_check
+    from .config import DATA_DIR
 
     print("\n" + "=" * 60)
     print("STREAMING MODE")
@@ -162,21 +163,26 @@ def streaming_menu():
         # Show completed results
         print("\nLooking for completed results...")
 
-        if STREAMING_DIR.exists():
-            summaries = list(STREAMING_DIR.glob("*_summary.json"))
-            if summaries:
-                print(f"\nFound {len(summaries)} completed runs:")
-                for s in summaries:
-                    with open(s, 'r') as f:
-                        data = json.load(f)
-                    print(f"\n  {data['session_id']}:")
-                    print(f"    Stars: {data['n_stars']}")
-                    print(f"    Epochs: {data['n_epochs']}")
-                    print(f"    Completeness: {data.get('completeness', 0):.1%}")
-            else:
-                print("No completed runs found.")
+        summaries = []
+        # Check new data structure
+        tess_dir = DATA_DIR / "tess"
+        if tess_dir.exists():
+            summaries.extend(tess_dir.glob("**/*_summary.json"))
+        # Also check legacy location
+        if LEGACY_STREAMING_DIR.exists():
+            summaries.extend(LEGACY_STREAMING_DIR.glob("*_summary.json"))
+
+        if summaries:
+            print(f"\nFound {len(summaries)} completed runs:")
+            for s in summaries:
+                with open(s, 'r') as f:
+                    data = json.load(f)
+                print(f"\n  {data['session_id']}:")
+                print(f"    Stars: {data['n_stars']}")
+                print(f"    Epochs: {data['n_epochs']}")
+                print(f"    Completeness: {data.get('completeness', 0):.1%}")
         else:
-            print("No streaming results directory found.")
+            print("No completed runs found.")
 
     elif choice == "6":
         return
@@ -294,18 +300,24 @@ def show_available_sectors():
 
 def calibrate_menu():
     """Handle calibration."""
-    from .StreamingPipeline import STREAMING_DIR
+    from .StreamingPipeline import LEGACY_STREAMING_DIR
+    from .config import DATA_DIR
 
     print("\n--- Calibration ---")
 
-    # Check for streaming data first
-    if STREAMING_DIR.exists():
-        streaming_files = list(STREAMING_DIR.glob("*_photometry*.csv"))
-        if streaming_files:
-            print("NOTE: You have STREAMING data available!")
-            print("Streaming mode already includes calibration.")
-            print("Skip this step and go to 'Build star catalog' (option 4).")
-            print()
+    # Check for streaming data first (new and legacy paths)
+    streaming_files = []
+    tess_dir = DATA_DIR / "tess"
+    if tess_dir.exists():
+        streaming_files.extend(tess_dir.glob("**/*_photometry*.csv"))
+    if LEGACY_STREAMING_DIR.exists():
+        streaming_files.extend(LEGACY_STREAMING_DIR.glob("*_photometry*.csv"))
+
+    if streaming_files:
+        print("NOTE: You have STREAMING data available!")
+        print("Streaming mode already includes calibration.")
+        print("Skip this step and go to 'Build star catalog' (option 4).")
+        print()
 
     fits_files = sorted(FITS_DIR.glob('*.fits'))
 
@@ -342,14 +354,24 @@ def calibrate_menu():
 def build_catalog_menu():
     """Build star catalog with cross-matching."""
     from .StarCatalog import build_star_catalog, StarCatalog
-    from .StreamingPipeline import convert_to_starcatalog, STREAMING_DIR
+    from .StreamingPipeline import convert_to_starcatalog, LEGACY_STREAMING_DIR
+    from .config import DATA_DIR
 
     print("\n--- Build Star Catalog ---")
 
-    # Check for streaming results FIRST
-    streaming_checkpoints = list(STREAMING_DIR.glob("*_photometry_checkpoint.csv")) if STREAMING_DIR.exists() else []
-    streaming_final = list(STREAMING_DIR.glob("*_photometry.csv")) if STREAMING_DIR.exists() else []
-    streaming_files = streaming_final or streaming_checkpoints
+    # Check for streaming results FIRST (new and legacy paths)
+    streaming_files = []
+    # New data structure
+    tess_dir = DATA_DIR / "tess"
+    if tess_dir.exists():
+        streaming_files.extend(tess_dir.glob("**/*_photometry.csv"))
+        streaming_files.extend(tess_dir.glob("**/*_photometry_checkpoint.csv"))
+    # Legacy location
+    if LEGACY_STREAMING_DIR.exists():
+        streaming_files.extend(LEGACY_STREAMING_DIR.glob("*_photometry.csv"))
+        streaming_files.extend(LEGACY_STREAMING_DIR.glob("*_photometry_checkpoint.csv"))
+    # Filter out checkpoint duplicates (prefer non-checkpoint)
+    streaming_files = list(set(streaming_files))
 
     # Check for old-style calibration
     metadata_path = CALIBRATED_DATA_DIR / 'calibration_metadata.json'

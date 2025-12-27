@@ -16,8 +16,8 @@ from typing import Dict, List, Optional, Tuple
 from tqdm import tqdm
 import time
 
-from .config import BASE_DIR
-from .StreamingPipeline import convert_to_starcatalog, get_streaming_results, STREAMING_DIR
+from .config import BASE_DIR, DATA_DIR
+from .StreamingPipeline import convert_to_starcatalog, get_streaming_results
 from .LightcurveBuilder import Lightcurve, LightcurveCollection
 from .MLExport import FeatureExtractor
 

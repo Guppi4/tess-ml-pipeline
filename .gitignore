@@ -35,6 +35,7 @@ env/
 *~
 
 # Data directories (generated during processing)
+data/
 FITS/
 calibrated_data/
 photometry_results/
