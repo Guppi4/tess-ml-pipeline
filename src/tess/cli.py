@@ -990,12 +990,6 @@ def main():
         print("=" * 60)
         return
 
-    # Change to source directory for imports
-    import os
-    script_dir = Path(__file__).parent
-    os.chdir(script_dir)
-    sys.path.insert(0, str(script_dir))
-
     # Ensure directories exist
     from .config import ensure_directories
     ensure_directories()

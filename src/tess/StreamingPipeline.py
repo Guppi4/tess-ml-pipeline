@@ -466,8 +466,8 @@ class StreamingProcessor:
                 except Exception:
                     pass
 
-            # Detect or measure stars
-            epoch_idx = len(self.epoch_metadata)
+            # Use file index for epoch (thread-safe, not len(epoch_metadata) which races)
+            epoch_idx = file_info.get('file_idx', len(self.epoch_metadata))
 
             if self.reference_stars is None:
                 # First epoch - detect stars and build reference catalog
@@ -716,6 +716,10 @@ class StreamingProcessor:
         if not files:
             print("  No files found!")
             return {'error': 'No files found'}
+
+        # Add unique file index to each file (for thread-safe epoch numbering)
+        for idx, f in enumerate(files):
+            f['file_idx'] = idx
 
         # Filter already processed
         remaining_files = [f for f in files if f['filename'] not in self.processed_files]
