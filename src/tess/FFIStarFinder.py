@@ -197,7 +197,7 @@ def calculate_flux(phot_table, exposure_time):
     return phot_table
 
 
-def calculate_flux_error(phot_table, n_pixels, median, gain, std):
+def calculate_flux_error(phot_table, n_pixels, median, gain, std, exposure_time=1.0):
     """
     Calculate flux uncertainty using CCD noise model.
 
@@ -212,19 +212,22 @@ def calculate_flux_error(phot_table, n_pixels, median, gain, std):
         median: Median background level
         gain: Detector gain (e-/ADU)
         std: Background standard deviation
+        exposure_time: Exposure time in seconds (to convert to counts/second)
 
     Returns:
-        Updated photometry table with 'flux_error' column
+        Updated photometry table with 'flux_error' column (in counts/second)
     """
     # CCD noise model with correct dimensions:
     # - Signal Poisson: aperture_sum / gain
     # - Background Poisson: n_pixels * median / gain
     # - Read noise: n_pixels * (std/gain)² (not n_pixels²!)
-    phot_table['flux_error'] = np.sqrt(
+    # Calculate error in counts, then convert to counts/second
+    flux_error_counts = np.sqrt(
         phot_table['aperture_sum'] / gain +
         n_pixels * median / gain +
         n_pixels * (std / gain) ** 2
     )
+    phot_table['flux_error'] = flux_error_counts / exposure_time
     return phot_table
 
 

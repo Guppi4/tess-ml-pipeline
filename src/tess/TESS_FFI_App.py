@@ -4,7 +4,8 @@ from PyQt5.QtCore import Qt
 import FFIDownloader as dffi
 import FFICalibrate as cffi
 import FFIStarFinder as sffi
-import FFILcCreator as lffi
+# FFILcCreator was removed - use LightcurveBuilder instead
+# import FFILcCreator as lffi
 import os
 
 print(f"Current working directory: {os.getcwd()}")
@@ -121,20 +122,17 @@ class TESS_FFI_App(QMainWindow):
             QMessageBox.critical(self, "Error", f"An error occurred during star finding: {str(e)}")
 
     def create_lightcurve(self):
-        try:
-            star_ra = float(self.ra_entry.text())
-            star_dec = float(self.dec_entry.text())
-
-            lightcurve = lffi.create_lightcurve(self.star_data, star_ra, star_dec)
-            if lightcurve is not None:
-                QMessageBox.information(self, "Success", "Lightcurve created successfully!")
-                self.status_label.setText("Lightcurve created.")
-            else:
-                QMessageBox.critical(self, "Error", "Lightcurve creation failed.")
-        except ValueError:
-            QMessageBox.critical(self, "Error", "Invalid RA or Dec values. Please enter numbers.")
-        except Exception as e:
-            QMessageBox.critical(self, "Error", f"An error occurred during lightcurve creation: {str(e)}")
+        # Legacy GUI - lightcurve creation moved to CLI
+        # Use: tess-ffi lightcurves --star STAR_XXXXXX
+        QMessageBox.information(
+            self,
+            "Feature Moved",
+            "Lightcurve creation is now available via CLI:\n\n"
+            "tess-ffi lightcurves --star STAR_000123\n\n"
+            "Or use the Python API:\n"
+            "from tess.LightcurveBuilder import LightcurveCollection"
+        )
+        self.status_label.setText("Use CLI for lightcurves: tess-ffi lightcurves")
 
 def main():
     app = QApplication(sys.argv)

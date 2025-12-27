@@ -282,16 +282,18 @@ class StarCatalog:
             n_pixels = np.pi * DEFAULT_APERTURE_RADIUS ** 2
             aperture_sum = phot_table['aperture_sum'][0] - (local_bkg_per_pixel * n_pixels)
 
-            # Calculate flux
+            # Calculate flux (counts/second)
             flux = aperture_sum / exposure_time if exposure_time > 0 else aperture_sum
 
             # Calculate flux error (CCD noise model with correct dimensions)
             # Using LOCAL background instead of global median
-            flux_error = np.sqrt(
+            # Error in counts, then convert to counts/second
+            flux_error_counts = np.sqrt(
                 abs(aperture_sum) / gain +
                 n_pixels * local_bkg_per_pixel / gain +
                 n_pixels * (std / gain) ** 2
             )
+            flux_error = flux_error_counts / exposure_time if exposure_time > 0 else flux_error_counts
 
             # Determine quality flag
             if aperture_sum < 0:

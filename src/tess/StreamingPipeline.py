@@ -528,16 +528,18 @@ class StreamingProcessor:
             n_pixels = np.pi * DEFAULT_APERTURE_RADIUS ** 2
             aperture_sum = phot['aperture_sum'][0] - (local_bkg_per_pixel * n_pixels)
 
-            # Calculate flux and error
+            # Calculate flux and error (both in counts/second)
             exposure_time = metadata.get('exposure_time', 1) or 1
             flux = aperture_sum / exposure_time
 
             # CCD noise model with correct dimensions (using local background):
-            flux_error = np.sqrt(
+            # Error in counts, then convert to counts/second
+            flux_error_counts = np.sqrt(
                 abs(aperture_sum) / gain +
                 n_pixels * local_bkg_per_pixel / gain +
                 n_pixels * (std / gain) ** 2
             )
+            flux_error = flux_error_counts / exposure_time
 
             # Quality flag
             quality = 0
@@ -625,7 +627,7 @@ class StreamingProcessor:
             n_pixels = np.pi * DEFAULT_APERTURE_RADIUS ** 2
             aperture_sum = phot['aperture_sum'][0] - (local_bkg_per_pixel * n_pixels)
 
-            # Calculate flux and error
+            # Calculate flux and error (both in counts/second)
             exposure_time = metadata.get('exposure_time', 1) or 1
             flux = aperture_sum / exposure_time
 
@@ -633,11 +635,13 @@ class StreamingProcessor:
             # - Signal Poisson: aperture_sum / gain (ADU → electrons variance)
             # - Background Poisson: n_pixels * local_bkg / gain (using LOCAL background)
             # - Read noise: n_pixels * (std/gain)² (not n_pixels²!)
-            flux_error = np.sqrt(
+            # Error in counts, then convert to counts/second
+            flux_error_counts = np.sqrt(
                 abs(aperture_sum) / gain +
                 n_pixels * local_bkg_per_pixel / gain +
                 n_pixels * (std / gain) ** 2
             )
+            flux_error = flux_error_counts / exposure_time
 
             # Quality flag
             quality = 0
