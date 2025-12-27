@@ -16,8 +16,8 @@ This pipeline lets you:
 
 ```bash
 # Install
-git clone https://github.com/JosefSo/TESS_Project.git
-cd TESS_Project
+git clone https://github.com/Guppi4/tess-ml-pipeline.git
+cd tess-ml-pipeline
 pip install -e .
 
 # Process one CCD from sector 70 (downloads ~500 MB, not 10 GB!)
