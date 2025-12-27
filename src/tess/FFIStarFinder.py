@@ -303,8 +303,8 @@ def process_fits_file(fits_files, data_arrays, means, medians, stds):
                 hdu[1].header['GAIND']
             ) / 4
 
-            # Calculate flux error
-            phot_table = calculate_flux_error(phot_table, n_pixels, median, gain, std)
+            # Calculate flux error (pass exposure_time for consistent units)
+            phot_table = calculate_flux_error(phot_table, n_pixels, median, gain, std, exposure_time)
 
             # Get timestamps
             header = hdu[0].header
@@ -371,9 +371,9 @@ def find_stars(fits_files, data_arrays, means, medians, stds):
             phot_table['ra'] = ra_vals
             phot_table['dec'] = dec_vals
 
-        # Calculate flux and errors
+        # Calculate flux and errors (both in counts/second)
         phot_table = calculate_flux(phot_table, exposure_time)
-        phot_table = calculate_flux_error(phot_table, n_pixels, median, gain, std)
+        phot_table = calculate_flux_error(phot_table, n_pixels, median, gain, std, exposure_time)
 
         # Add signal-to-noise ratio
         phot_table = compare_to_background(phot_table, median)
