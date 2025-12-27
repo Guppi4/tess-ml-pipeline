@@ -926,6 +926,10 @@ class StreamingProcessor:
             print("  No files found!")
             return {'error': 'No files found'}
 
+        # Add unique file index to each file (for thread-safe epoch numbering)
+        for idx, f in enumerate(files):
+            f['file_idx'] = idx
+
         # Filter already processed
         remaining_files = [f for f in files if f['filename'] not in self.processed_files]
 
