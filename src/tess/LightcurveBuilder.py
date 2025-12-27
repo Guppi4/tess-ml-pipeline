@@ -452,7 +452,7 @@ def build_lightcurves(catalog: StarCatalog = None,
 
     if min_detections is not None:
         # Update global config temporarily
-        import config
+        from . import config
         old_val = config.MIN_EPOCHS_FOR_STAR
         config.MIN_EPOCHS_FOR_STAR = min_detections
 

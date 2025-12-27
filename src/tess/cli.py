@@ -412,7 +412,7 @@ Examples:
 
 def cmd_download(args):
     """Handle download command."""
-    import FFIDownloader as dffi
+    from . import FFIDownloader as dffi
 
     if args.list_sectors:
         print("Fetching available sectors from MAST...")
@@ -483,7 +483,7 @@ def cmd_process(args):
 
 def cmd_calibrate(args):
     """Handle calibrate command."""
-    import FFICalibrate as cffi
+    from . import FFICalibrate as cffi
     from .config import FITS_DIR, CALIBRATED_DATA_DIR
 
     fits_files = sorted(FITS_DIR.glob('*.fits'))

@@ -60,8 +60,8 @@ def print_main_menu():
 
 def streaming_menu():
     """Streaming mode - process on-the-fly without storing raw files."""
-    from StreamingPipeline import run_streaming_pipeline, get_streaming_results, STREAMING_DIR
-    from SectorAnalyzer import get_sector_quality, compare_sectors, quick_check
+    from .StreamingPipeline import run_streaming_pipeline, get_streaming_results, STREAMING_DIR
+    from .SectorAnalyzer import get_sector_quality, compare_sectors, quick_check
 
     print("\n" + "=" * 60)
     print("STREAMING MODE")
@@ -294,7 +294,7 @@ def show_available_sectors():
 
 def calibrate_menu():
     """Handle calibration."""
-    from StreamingPipeline import STREAMING_DIR
+    from .StreamingPipeline import STREAMING_DIR
 
     print("\n--- Calibration ---")
 
@@ -341,8 +341,8 @@ def calibrate_menu():
 
 def build_catalog_menu():
     """Build star catalog with cross-matching."""
-    from StarCatalog import build_star_catalog, StarCatalog
-    from StreamingPipeline import convert_to_starcatalog, STREAMING_DIR
+    from .StarCatalog import build_star_catalog, StarCatalog
+    from .StreamingPipeline import convert_to_starcatalog, STREAMING_DIR
 
     print("\n--- Build Star Catalog ---")
 
@@ -455,8 +455,8 @@ def build_catalog_menu():
 
 def lightcurve_menu():
     """Build and view lightcurves."""
-    from StarCatalog import StarCatalog
-    from LightcurveBuilder import LightcurveCollection
+    from .StarCatalog import StarCatalog
+    from .LightcurveBuilder import LightcurveCollection
 
     print("\n--- Lightcurves ---")
 
@@ -534,9 +534,9 @@ def lightcurve_menu():
 
 def ml_export_menu():
     """Export data for ML classification."""
-    from StarCatalog import StarCatalog
-    from LightcurveBuilder import LightcurveCollection
-    from MLExport import export_for_ml, MLDataset
+    from .StarCatalog import StarCatalog
+    from .LightcurveBuilder import LightcurveCollection
+    from .MLExport import export_for_ml, MLDataset
 
     print("\n--- ML Export ---")
 

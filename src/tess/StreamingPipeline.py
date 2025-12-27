@@ -45,7 +45,7 @@ import threading
 
 # Async downloader for high-performance parallel downloads
 try:
-    from AsyncDownloader import AsyncDownloader, download_files_async
+    from .AsyncDownloader import AsyncDownloader, download_files_async
     ASYNC_AVAILABLE = True
 except ImportError:
     ASYNC_AVAILABLE = False
@@ -298,7 +298,7 @@ class StreamingProcessor:
 
     def get_sector_files(self) -> List[Dict]:
         """Get list of all FFI files for this sector/camera/ccd."""
-        from FFIDownloader import get_sector_info
+        from .FFIDownloader import get_sector_info
 
         sector_info = get_sector_info(self.sector)
 
@@ -993,7 +993,7 @@ class StreamingProcessor:
         Returns:
             DataFrame with star catalog including TIC IDs
         """
-        from FFIStarFinder import add_tic_ids
+        from .FFIStarFinder import add_tic_ids
 
         # Convert catalog to DataFrame
         records = []
@@ -1209,7 +1209,7 @@ def convert_to_starcatalog(sector: int, camera: str = "1", ccd: str = "1"):
 
     This allows you to use the existing pipeline steps after streaming download.
     """
-    from StarCatalog import StarCatalog
+    from .StarCatalog import StarCatalog
 
     df, catalog_data = get_streaming_results(sector, camera, ccd)
 

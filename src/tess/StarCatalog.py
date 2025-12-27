@@ -527,7 +527,7 @@ class StarCatalog:
         Returns:
             Number of stars with TIC matches
         """
-        from FFIStarFinder import add_tic_ids
+        from .FFIStarFinder import add_tic_ids
 
         # Convert to DataFrame
         records = []
