@@ -1,0 +1,65 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Virtual environments
+myenv/
+venv/
+ENV/
+env/
+.venv/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# Data directories (generated during processing)
+FITS/
+calibrated_data/
+photometry_results/
+lightcurves/
+streaming_results/
+ml_data/
+variable_stars/
+manifests/
+
+# FITS files
+*.fits
+*.fit
+
+# Jupyter
+.ipynb_checkpoints/
+*.ipynb
+
+# OS
+.DS_Store
+Thumbs.db
+nul
+NUL
+
+# Logs
+*.log
+
+# Local configuration (if needed)
+config.local.py

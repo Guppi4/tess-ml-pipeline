@@ -1,0 +1,12 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(dir /b \"C:\\Users\\kiril\\OneDrive\\Desktop\\My_projects\\TESS_project-main\")",
+      "WebFetch(domain:archive.stsci.edu)",
+      "WebSearch",
+      "Bash(powershell -Command \"(Get-Content ''C:\\Users\\kiril\\OneDrive\\Desktop\\My_projects\\TESS_project-main\\streaming_results\\s0070_1-1_photometry_checkpoint.csv'').Count\")"
+    ],
+    "deny": [],
+    "ask": []
+  }
+}

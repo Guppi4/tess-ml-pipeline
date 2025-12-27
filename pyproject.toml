@@ -1,0 +1,66 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "tess-ffi-pipeline"
+version = "1.0.0"
+description = "TESS FFI Data Processing Pipeline for aperture photometry and lightcurve generation"
+readme = "README.md"
+requires-python = ">=3.8"
+license = {text = "MIT"}
+authors = [
+    {name = "Kiril"}
+]
+keywords = ["tess", "astronomy", "photometry", "exoplanets", "lightcurves"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.8",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Topic :: Scientific/Engineering :: Astronomy",
+]
+
+dependencies = [
+    "numpy>=1.20.0",
+    "pandas>=1.3.0",
+    "matplotlib>=3.4.0",
+    "scipy>=1.7.0",
+    "astropy>=5.0",
+    "photutils>=1.5.0",
+    "astroquery>=0.4.6",
+    "requests>=2.25.0",
+    "beautifulsoup4>=4.9.0",
+    "tqdm>=4.60.0",
+    "tess-point>=0.6.0",
+]
+
+[project.optional-dependencies]
+gui = ["PyQt5>=5.15.0"]
+dev = [
+    "pytest>=7.0.0",
+    "pytest-cov>=4.0.0",
+    "black>=23.0.0",
+    "flake8>=6.0.0",
+]
+
+[project.scripts]
+tess-ffi = "tess.cli:main"
+
+[project.urls]
+Repository = "https://github.com/JosefSo/TESS_Project"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.black]
+line-length = 100
+target-version = ["py38", "py39", "py310", "py311"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = "test_*.py"
