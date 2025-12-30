@@ -257,7 +257,7 @@ class StarCatalog:
                     'flux': np.nan,
                     'flux_error': np.nan,
                     'quality_flag': 4,  # WCS conversion failed
-                    'mjd': mjd
+                    'btjd': mjd
                 }
                 continue
 
@@ -269,7 +269,7 @@ class StarCatalog:
                     'xcentroid': x,
                     'ycentroid': y,
                     'quality_flag': 3,  # Outside image
-                    'mjd': mjd
+                    'btjd': mjd
                 }
                 continue
 
@@ -326,7 +326,7 @@ class StarCatalog:
                 'quality_flag': int(quality_flag),
                 'snr': float(snr),
                 'background': float(local_bkg_per_pixel),
-                'mjd': mjd
+                'btjd': mjd
             }
 
         return results
@@ -390,7 +390,10 @@ class StarCatalog:
 
         df = pd.DataFrame(records)
         if len(df) > 0:
-            df = df.sort_values('mjd')
+            # Support both btjd (new) and mjd (legacy) column names
+            time_col = 'btjd' if 'btjd' in df.columns else 'mjd' if 'mjd' in df.columns else None
+            if time_col:
+                df = df.sort_values(time_col)
 
         return df
 

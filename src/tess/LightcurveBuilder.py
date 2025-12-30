@@ -28,16 +28,20 @@ class Lightcurve:
         """
         Args:
             star_id: Unique identifier for the star
-            data: DataFrame with columns: mjd, flux, flux_error, quality_flag, ...
+            data: DataFrame with columns: btjd, flux, flux_error, quality_flag, ...
             star_info: Additional star information (ra, dec, etc.)
         """
         self.star_id = star_id
         self.data = data.copy()
         self.star_info = star_info or {}
 
+        # Backwards compatibility: rename 'mjd' to 'btjd' if needed
+        if 'mjd' in self.data.columns and 'btjd' not in self.data.columns:
+            self.data = self.data.rename(columns={'mjd': 'btjd'})
+
         # Ensure sorted by time
-        if 'mjd' in self.data.columns:
-            self.data = self.data.sort_values('mjd').reset_index(drop=True)
+        if 'btjd' in self.data.columns:
+            self.data = self.data.sort_values('btjd').reset_index(drop=True)
 
         # Calculate basic stats
         self._calculate_statistics()
@@ -69,10 +73,10 @@ class Lightcurve:
             })
 
             # Time coverage
-            mjd = good_data['mjd'].values
-            self.stats['mjd_start'] = np.min(mjd)
-            self.stats['mjd_end'] = np.max(mjd)
-            self.stats['time_span_days'] = np.max(mjd) - np.min(mjd)
+            btjd = good_data['btjd'].values
+            self.stats['btjd_start'] = np.min(btjd)
+            self.stats['btjd_end'] = np.max(btjd)
+            self.stats['time_span_days'] = np.max(btjd) - np.min(btjd)
 
             # Variability metrics
             # Median Absolute Deviation (robust measure of scatter)
@@ -179,18 +183,18 @@ class Lightcurve:
         if len(good_data) < 3:
             return self
 
-        mjd = good_data['mjd'].values
+        btjd = good_data['btjd'].values
         flux = good_data['flux'].values
 
         if method == 'linear':
             # Fit linear trend
-            slope, intercept, _, _, _ = stats.linregress(mjd, flux)
-            trend = slope * mjd + intercept
+            slope, intercept, _, _, _ = stats.linregress(btjd, flux)
+            trend = slope * btjd + intercept
 
         elif method == 'polynomial':
             # Fit polynomial
-            coeffs = np.polyfit(mjd, flux, deg=2)
-            trend = np.polyval(coeffs, mjd)
+            coeffs = np.polyfit(btjd, flux, deg=2)
+            trend = np.polyval(coeffs, btjd)
 
         elif method == 'median_filter':
             # Running median
@@ -219,7 +223,7 @@ class Lightcurve:
             good_only: If True, only return good quality data
 
         Returns:
-            Tuple of (mjd, flux, flux_error)
+            Tuple of (btjd, flux, flux_error)
         """
         if good_only:
             data = self.get_good_data()
@@ -227,7 +231,7 @@ class Lightcurve:
             data = self.data
 
         return (
-            data['mjd'].values,
+            data['btjd'].values,
             data['flux'].values,
             data['flux_error'].values
         )
@@ -258,20 +262,20 @@ class Lightcurve:
 
         # Plot good data
         if show_errors:
-            ax.errorbar(good_data['mjd'], good_data['flux'],
+            ax.errorbar(good_data['btjd'], good_data['flux'],
                        yerr=good_data['flux_error'],
                        fmt='o', markersize=4, capsize=2,
                        label='Good', **kwargs)
         else:
-            ax.plot(good_data['mjd'], good_data['flux'], 'o',
+            ax.plot(good_data['btjd'], good_data['flux'], 'o',
                    markersize=4, label='Good', **kwargs)
 
         # Plot bad data
         if show_bad and len(bad_data) > 0:
-            ax.plot(bad_data['mjd'], bad_data['flux'], 'x',
+            ax.plot(bad_data['btjd'], bad_data['flux'], 'x',
                    color='gray', markersize=4, alpha=0.5, label='Flagged')
 
-        ax.set_xlabel('MJD')
+        ax.set_xlabel('BTJD')
         ax.set_ylabel('Flux' + (' (normalized)' if normalized else ''))
         ax.set_title(f'Lightcurve: {self.star_id}')
 

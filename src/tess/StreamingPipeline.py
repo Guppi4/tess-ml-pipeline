@@ -626,7 +626,7 @@ class StreamingProcessor:
             record = {
                 'star_id': star_id,
                 'epoch': epoch_idx,
-                'mjd': metadata.get('btjd_mid'),  # BTJD mid-time
+                'btjd': metadata.get('btjd_mid'),  # BTJD mid-time
                 'flux': float(flux),
                 'flux_error': float(flux_error),
                 'quality': int(quality),
@@ -669,7 +669,7 @@ class StreamingProcessor:
                 record = {
                     'star_id': star_id,
                     'epoch': epoch_idx,
-                    'mjd': metadata.get('btjd_mid'),  # BTJD mid-time
+                    'btjd': metadata.get('btjd_mid'),  # BTJD mid-time
                     'flux': np.nan,
                     'flux_error': np.nan,
                     'quality': 3,  # Outside image
@@ -721,7 +721,7 @@ class StreamingProcessor:
             record = {
                 'star_id': star_id,
                 'epoch': epoch_idx,
-                'mjd': metadata.get('btjd_mid'),  # BTJD mid-time
+                'btjd': metadata.get('btjd_mid'),  # BTJD mid-time
                 'flux': float(flux),
                 'flux_error': float(flux_error),
                 'quality': int(quality),
@@ -1183,12 +1183,14 @@ class StreamingProcessor:
             'files_processed': len(self.processed_files),
         }
 
-        if len(df) > 0 and 'mjd' in df.columns:
-            mjd_values = df['mjd'].dropna()
-            if len(mjd_values) > 0:
-                summary['mjd_start'] = float(mjd_values.min())
-                summary['mjd_end'] = float(mjd_values.max())
-                summary['time_span_days'] = summary['mjd_end'] - summary['mjd_start']
+        # Check for btjd column (new) or mjd column (legacy)
+        time_col = 'btjd' if 'btjd' in df.columns else 'mjd' if 'mjd' in df.columns else None
+        if len(df) > 0 and time_col:
+            btjd_values = df[time_col].dropna()
+            if len(btjd_values) > 0:
+                summary['btjd_start'] = float(btjd_values.min())
+                summary['btjd_end'] = float(btjd_values.max())
+                summary['time_span_days'] = summary['btjd_end'] - summary['btjd_start']
 
         if len(df) > 0 and 'quality' in df.columns:
             good = (df['quality'] == 0).sum()
@@ -1355,11 +1357,13 @@ def convert_to_starcatalog(sector: int, camera: str = "1", ccd: str = "1"):
         if star_id not in catalog.photometry:
             continue
 
+        # Support both btjd (new) and mjd (legacy) column names
+        time_value = row.get('btjd', row.get('mjd'))
         catalog.photometry[star_id][epoch] = {
             'flux': row['flux'],
             'flux_error': row['flux_error'],
             'quality_flag': int(row['quality']),  # Rename quality -> quality_flag
-            'mjd': row['mjd'],
+            'btjd': time_value,
             'xcentroid': row.get('x'),
             'ycentroid': row.get('y'),
         }
@@ -1370,9 +1374,10 @@ def convert_to_starcatalog(sector: int, camera: str = "1", ccd: str = "1"):
 
     catalog.n_stars = len(catalog.stars)
 
-    # Build epochs list (mjd column now contains BTJD mid-time)
-    epochs = df.groupby('epoch')['mjd'].first().to_dict()
-    catalog.epochs = [{'metadata': {'btjd_mid': mjd, 'mjd_obs': mjd}} for mjd in sorted(epochs.values())]
+    # Build epochs list - support both btjd (new) and mjd (legacy) column names
+    time_col = 'btjd' if 'btjd' in df.columns else 'mjd'
+    epochs = df.groupby('epoch')[time_col].first().to_dict()
+    catalog.epochs = [{'metadata': {'btjd_mid': btjd, 'mjd_obs': btjd}} for btjd in sorted(epochs.values())]
 
     print(f"Converted to StarCatalog: {catalog.n_stars} stars, {len(catalog.epochs)} epochs")
 

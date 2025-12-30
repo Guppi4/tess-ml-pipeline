@@ -59,7 +59,7 @@ class FeatureExtractor:
 
         flux = good_data['flux'].values
         errors = good_data['flux_error'].values
-        mjd = good_data['mjd'].values
+        btjd = good_data['btjd'].values
 
         features = {}
 
@@ -98,7 +98,7 @@ class FeatureExtractor:
             features['weighted_std'] = np.sqrt(np.sum(weights * (flux - features['weighted_mean']) ** 2) / np.sum(weights))
 
         # Time-domain features
-        features['time_span'] = mjd[-1] - mjd[0]
+        features['time_span'] = btjd[-1] - btjd[0]
         features['n_observations'] = len(flux)
 
         # Flux differences
@@ -133,7 +133,7 @@ class FeatureExtractor:
             return {}
 
         flux = good_data['flux'].values
-        mjd = good_data['mjd'].values
+        btjd = good_data['btjd'].values
 
         features = {}
 
@@ -142,11 +142,11 @@ class FeatureExtractor:
 
         # Lomb-Scargle periodogram (handles non-uniform sampling correctly)
         # Frequency range: from 1/time_span to Nyquist (1/2*median_cadence)
-        time_span = mjd[-1] - mjd[0]
+        time_span = btjd[-1] - btjd[0]
         if time_span <= 0:
             return {}
 
-        median_cadence = np.median(np.diff(mjd))
+        median_cadence = np.median(np.diff(btjd))
         if median_cadence <= 0:
             return {}
 
@@ -154,7 +154,7 @@ class FeatureExtractor:
         max_freq = 1.0 / (2 * median_cadence)  # Nyquist frequency
 
         # Compute Lomb-Scargle periodogram
-        ls = LombScargle(mjd, flux_norm)
+        ls = LombScargle(btjd, flux_norm)
         freqs, power = ls.autopower(
             minimum_frequency=min_freq,
             maximum_frequency=max_freq
@@ -290,7 +290,7 @@ class MLDataset:
             star_ids.append(lc.star_id)
 
             # Get data
-            mjd, flux, error = lc.to_arrays(good_only=False)
+            btjd, flux, error = lc.to_arrays(good_only=False)
 
             if normalize:
                 median_flux = np.nanmedian(flux)
