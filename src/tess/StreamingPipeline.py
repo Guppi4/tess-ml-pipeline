@@ -723,13 +723,15 @@ class StreamingProcessor:
 
         return photometry_records
 
-    def run(self, resume: bool = True, workers: int = 5) -> Dict:
+    def run(self, resume: bool = True, workers: int = 5, cadence_skip: int = 1) -> Dict:
         """
         Run the streaming pipeline with parallel downloading.
 
         Args:
             resume: If True, resume from checkpoint if available
             workers: Number of parallel download workers (default 6)
+            cadence_skip: Take every Nth file (default 1 = all files)
+                         6 = 3/hour, 9 = 2/hour, 18 = 1/hour
 
         Returns:
             Summary dictionary
@@ -746,6 +748,13 @@ class StreamingProcessor:
         if not files:
             print("  No files found!")
             return {'error': 'No files found'}
+
+        # Apply cadence skip (take every Nth file)
+        original_count = len(files)
+        if cadence_skip > 1:
+            files = files[::cadence_skip]
+            effective_cadence = 200 * cadence_skip  # seconds between samples
+            print(f"  Cadence skip={cadence_skip}: {original_count} -> {len(files)} files (~{effective_cadence//60} min between samples)")
 
         # Add unique file index to each file (for thread-safe epoch numbering)
         for idx, f in enumerate(files):
@@ -920,7 +929,7 @@ class StreamingProcessor:
 
     def run_async(self, resume: bool = True, download_workers: int = 10,
                   process_workers: int = 4, batch_size: int = 50,
-                  max_files: int = None) -> Dict:
+                  max_files: int = None, cadence_skip: int = 1) -> Dict:
         """
         Run the streaming pipeline with high-performance async downloading.
 
@@ -935,13 +944,15 @@ class StreamingProcessor:
             process_workers: Number of parallel processing threads (default 4)
             batch_size: Files per batch (default 50)
             max_files: Maximum number of files to process (default None = all)
+            cadence_skip: Take every Nth file (default 1 = all files)
+                         6 = 3/hour, 9 = 2/hour, 18 = 1/hour
 
         Returns:
             Summary dictionary
         """
         if not ASYNC_AVAILABLE:
             print("  Warning: aiohttp not available, falling back to sync mode")
-            return self.run(resume=resume, workers=process_workers)
+            return self.run(resume=resume, workers=process_workers, cadence_skip=cadence_skip)
 
         # Try to resume
         if resume:
@@ -955,6 +966,13 @@ class StreamingProcessor:
         if not files:
             print("  No files found!")
             return {'error': 'No files found'}
+
+        # Apply cadence skip (take every Nth file)
+        original_count = len(files)
+        if cadence_skip > 1:
+            files = files[::cadence_skip]
+            effective_cadence = 200 * cadence_skip  # seconds between samples
+            print(f"  Cadence skip={cadence_skip}: {original_count} -> {len(files)} files (~{effective_cadence//60} min between samples)")
 
         # Add unique file index to each file (for thread-safe epoch numbering)
         for idx, f in enumerate(files):
@@ -1150,7 +1168,8 @@ class StreamingProcessor:
 def run_streaming_pipeline(sector: int, camera: str = "1", ccd: str = "1",
                           resume: bool = True, workers: int = 5,
                           add_tic: bool = False, async_mode: bool = True,
-                          download_workers: int = 10, batch_size: int = 50) -> Dict:
+                          download_workers: int = 10, batch_size: int = 50,
+                          cadence_skip: int = 1) -> Dict:
     """
     Convenience function to run streaming pipeline.
 
@@ -1164,6 +1183,8 @@ def run_streaming_pipeline(sector: int, camera: str = "1", ccd: str = "1",
         async_mode: If True, use high-performance async downloading (5-10x faster)
         download_workers: Concurrent downloads in async mode (default 10)
         batch_size: Files per batch in async mode (default 50)
+        cadence_skip: Take every Nth file (default 1 = all files)
+                     6 = 3/hour (~20 min), 9 = 2/hour (~30 min), 18 = 1/hour
 
     Returns:
         Summary dictionary
@@ -1175,13 +1196,14 @@ def run_streaming_pipeline(sector: int, camera: str = "1", ccd: str = "1",
             resume=resume,
             download_workers=download_workers,
             process_workers=workers,
-            batch_size=batch_size
+            batch_size=batch_size,
+            cadence_skip=cadence_skip
         )
     else:
         if async_mode and not ASYNC_AVAILABLE:
             print("  Note: async mode requires 'pip install aiohttp aiofiles'")
             print("  Falling back to standard mode...\n")
-        result = processor.run(resume=resume, workers=workers)
+        result = processor.run(resume=resume, workers=workers, cadence_skip=cadence_skip)
 
     # Add TIC IDs if requested
     if add_tic and processor.star_catalog:
