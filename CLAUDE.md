@@ -45,9 +45,10 @@ MAST Archive
 │              StreamingPipeline.py                       │
 │  for each FITS file:                                   │
 │    download → calibrate → detect → photometry → delete │
+│  (supports cadence_skip for faster processing)         │
 └────────────────────────────────────────────────────────┘
      │
-     ▼  streaming_results/*.csv
+     ▼  data/tess/sector_XXX/camY_ccdZ/*.csv
      │
 ┌────────────────────────────────────────────────────────┐
 │              LightcurveBuilder.py                       │
@@ -90,8 +91,20 @@ tess-ffi calibrate                                 # Background calibration
 Main processing engine. Downloads FFI files one at a time, extracts photometry, deletes raw files. Supports parallel downloads, checkpointing, and resume.
 
 **Key functions:**
-- `run_streaming_pipeline(sector, camera, ccd)` - Main entry point
+- `run_streaming_pipeline(sector, camera, ccd, cadence_skip=1)` - Main entry point
 - `convert_to_starcatalog(sector, camera, ccd)` - Convert results to StarCatalog format
+
+**cadence_skip parameter:**
+Controls how many files to skip for faster processing. TESS sector 70 has ~10,730 files at 200-second cadence (18 images/hour).
+
+| cadence_skip | Files processed | Time resolution |
+|--------------|-----------------|-----------------|
+| 1 (default)  | All (~10,730)   | 200 sec (~18/hour) |
+| 6            | ~1,789          | 20 min (3/hour) |
+| 9            | ~1,193          | 30 min (2/hour) |
+| 18           | ~596            | 1 hour (1/hour) |
+
+**Note:** If you resume with a different cadence_skip than before, you'll get a warning. The checkpoint stores the original cadence_skip value.
 
 ### LightcurveBuilder.py
 Builds time series for each star and calculates variability metrics.
@@ -147,20 +160,33 @@ Extracts features for machine learning classification.
 ## Output Directories
 
 ```
-streaming_results/     # Main photometry output
-variable_stars/        # Variable star analysis
-ml_data/features/      # ML features (CSV, NPY)
-ml_data/timeseries/    # Padded sequences (NPZ)
-lightcurves/           # Saved plots
-photometry_results/    # Converted StarCatalog format
+data/
+├── tess/
+│   └── sector_XXX/
+│       └── camY_ccdZ/
+│           ├── sXXX_Y-Z_photometry.csv      # Main photometry output
+│           └── sXXX_Y-Z_photometry_checkpoint.csv
+├── exports/
+│   ├── features/       # ML features (CSV, NPY)
+│   └── timeseries/     # Padded sequences (NPZ)
+variable_stars/         # Variable star analysis
+lightcurves/            # Saved plots
+photometry_results/     # Converted StarCatalog format
 ```
+
+**Note:** Legacy `streaming_results/` directory is still supported for backwards compatibility.
 
 ## Common Tasks
 
 ### Process a new sector
 ```python
 from tess.StreamingPipeline import run_streaming_pipeline
+
+# Full resolution (all files, ~10,730 for sector 70)
 run_streaming_pipeline(sector=70, camera="1", ccd="1", workers=5)
+
+# Faster processing with cadence_skip (every 6th file = 3 observations/hour)
+run_streaming_pipeline(sector=70, camera="1", ccd="1", workers=10, cadence_skip=6)
 ```
 
 ### Find variable stars

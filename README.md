@@ -55,7 +55,7 @@ tess-ffi export --name my_dataset
     │                 keep only results (~100 MB)                 │
     └─────────────────────────────────────────────────────────────┘
          │
-         │  streaming_results/*.csv
+         │  data/tess/sector_XXX/camY_ccdZ/*.csv
          │
          ▼
     ┌─────────────────────────────────────────────────────────────┐
@@ -133,28 +133,59 @@ tess-ffi lightcurves --star STAR_000123
 tess-ffi export --name clean_data --min-completeness 0.8 --min-snr 10
 ```
 
+### cadence_skip - Faster Processing
+
+TESS sector 70 has ~10,730 files at 200-second cadence (18 images/hour). Use `cadence_skip` to process every Nth file for faster results:
+
+```python
+from tess.StreamingPipeline import run_streaming_pipeline
+
+# All files (default) - best accuracy
+run_streaming_pipeline(sector=70, camera="1", ccd="1", cadence_skip=1)
+
+# Every 6th file - 3 observations per hour (~1,789 files)
+run_streaming_pipeline(sector=70, camera="1", ccd="1", cadence_skip=6)
+
+# Every 9th file - 2 observations per hour (~1,193 files)
+run_streaming_pipeline(sector=70, camera="1", ccd="1", cadence_skip=9)
+
+# Every 18th file - 1 observation per hour (~596 files)
+run_streaming_pipeline(sector=70, camera="1", ccd="1", cadence_skip=18)
+```
+
+| cadence_skip | Files | Time resolution | Use case |
+|--------------|-------|-----------------|----------|
+| 1 | ~10,730 | 200 sec | Full precision |
+| 6 | ~1,789 | 20 min | Good for most variables |
+| 9 | ~1,193 | 30 min | Quick survey |
+| 18 | ~596 | 1 hour | Initial exploration |
+
 ## Understanding the Output
 
 ### Directory Structure
 
 ```
 project/
-├── streaming_results/          # Main output
-│   ├── s0070_1-1_photometry.csv    # All measurements
-│   ├── s0070_1-1_catalog.json      # Star positions + TIC IDs
-│   └── checkpoints/                # Resume data
+├── data/
+│   ├── tess/
+│   │   └── sector_070/
+│   │       └── cam1_ccd1/
+│   │           ├── s0070_1-1_photometry.csv         # All measurements
+│   │           └── s0070_1-1_photometry_checkpoint.csv  # Resume data
+│   │
+│   └── exports/                    # Machine learning exports
+│       ├── features/*.csv              # Statistical features
+│       └── timeseries/*.npz            # Padded sequences
 │
 ├── variable_stars/             # Variable star analysis
 │   ├── s0070_1-1_candidates.csv    # Top candidates
 │   ├── s0070_1-1_all_stars.csv     # All analyzed stars
 │   └── plots/                      # Lightcurve plots
 │
-├── ml_data/                    # Machine learning exports
-│   ├── features/*.csv              # Statistical features
-│   └── timeseries/*.npz            # Padded sequences
-│
 └── lightcurves/                # Saved plots
 ```
+
+**Note:** Legacy `streaming_results/` directory is still supported for backwards compatibility.
 
 ### Photometry File Columns
 
@@ -195,7 +226,7 @@ Best for most users. Processes data on-the-fly, uses only ~500 MB disk space.
 
 ```bash
 tess-ffi process --sector 70 --camera 1 --ccd 1
-# That's it! Results in streaming_results/
+# Results in data/tess/sector_070/cam1_ccd1/
 ```
 
 ### Path 2: Legacy (Full Download)
@@ -216,8 +247,8 @@ from tess.LightcurveBuilder import LightcurveCollection
 from tess.VariableStarFinder import VariableStarFinder
 from tess.MLExport import export_for_ml
 
-# Process sector
-run_streaming_pipeline(sector=70, camera="1", ccd="1", workers=5)
+# Process sector (with optional cadence_skip for faster processing)
+run_streaming_pipeline(sector=70, camera="1", ccd="1", workers=10, cadence_skip=6)
 
 # Build lightcurves
 catalog = convert_to_starcatalog(70, "1", "1")
