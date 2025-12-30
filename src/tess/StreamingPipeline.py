@@ -245,6 +245,9 @@ class StreamingProcessor:
         self.reference_stars = None
         self.reference_epoch_idx = None
 
+        # Cadence skip (saved in checkpoint for consistency)
+        self._cadence_skip = None
+
         # Checkpoint path (new location)
         self.checkpoint_path = self.output_dir / "checkpoints" / f"{self.session_id}_checkpoint.json"
         # Legacy checkpoint path for loading old data
@@ -275,6 +278,7 @@ class StreamingProcessor:
                 self.epoch_metadata = data.get('epoch_metadata', [])
                 self.star_catalog = data.get('star_catalog', {})
                 self.reference_epoch_idx = data.get('reference_epoch_idx')
+                self._cadence_skip = data.get('cadence_skip')  # May be None for old checkpoints
 
                 # Load photometry from CSV (fallback to parquet for old checkpoints)
                 csv_path = data_dir / f"{self.session_id}_photometry_checkpoint.csv"
@@ -311,6 +315,7 @@ class StreamingProcessor:
             'epoch_metadata': self.epoch_metadata,
             'star_catalog': self.star_catalog,
             'reference_epoch_idx': self.reference_epoch_idx,
+            'cadence_skip': self._cadence_skip,
             'last_update': datetime.now().isoformat()
         }
 
@@ -360,6 +365,10 @@ class StreamingProcessor:
                             })
                 except:
                     continue
+
+        # Sort by filename to ensure chronological order
+        # TESS filenames contain timestamp: tess2023001120000-s0070-...
+        files.sort(key=lambda x: x['filename'])
 
         return files
 
@@ -736,9 +745,21 @@ class StreamingProcessor:
         Returns:
             Summary dictionary
         """
+        # Validate cadence_skip
+        if not isinstance(cadence_skip, int) or cadence_skip < 1:
+            raise ValueError(f"cadence_skip must be a positive integer, got {cadence_skip}")
+
         # Try to resume
         if resume:
             self.load_checkpoint()
+
+        # Check if cadence_skip changed from checkpoint
+        if self._cadence_skip is not None and self._cadence_skip != cadence_skip:
+            print(f"\n  WARNING: cadence_skip changed from {self._cadence_skip} to {cadence_skip}")
+            print(f"  This may result in inconsistent epoch numbering!")
+
+        # Store current cadence_skip
+        self._cadence_skip = cadence_skip
 
         # Get file list (silently)
         print("\n  Fetching file list from MAST...", end="", flush=True)
@@ -950,6 +971,10 @@ class StreamingProcessor:
         Returns:
             Summary dictionary
         """
+        # Validate cadence_skip
+        if not isinstance(cadence_skip, int) or cadence_skip < 1:
+            raise ValueError(f"cadence_skip must be a positive integer, got {cadence_skip}")
+
         if not ASYNC_AVAILABLE:
             print("  Warning: aiohttp not available, falling back to sync mode")
             return self.run(resume=resume, workers=process_workers, cadence_skip=cadence_skip)
@@ -957,6 +982,14 @@ class StreamingProcessor:
         # Try to resume
         if resume:
             self.load_checkpoint()
+
+        # Check if cadence_skip changed from checkpoint
+        if self._cadence_skip is not None and self._cadence_skip != cadence_skip:
+            print(f"\n  WARNING: cadence_skip changed from {self._cadence_skip} to {cadence_skip}")
+            print(f"  This may result in inconsistent epoch numbering!")
+
+        # Store current cadence_skip
+        self._cadence_skip = cadence_skip
 
         # Get file list
         print("\n  Fetching file list from MAST...", end="", flush=True)
