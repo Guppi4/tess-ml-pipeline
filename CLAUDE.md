@@ -4,13 +4,17 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Session Management
 
-**IMPORTANT:** Before context compaction or session end, ALWAYS update `state.md` with:
+**At session START:** Read `state.md` to understand current project state.
+
+**During session:** Update `state.md` periodically after completing significant tasks:
 - Current branch and recent commits
-- What was done in this session
+- What was done
 - Next steps / pending tasks
 - Any known issues
 
-This ensures continuity between sessions. Read `state.md` at session start to understand current project state.
+**On `/compact` or `/clear`:** Update `state.md` first, then compact.
+
+PreCompact hook configured in `.claude/settings.local.json` will remind about this.
 
 ## Project Overview
 
