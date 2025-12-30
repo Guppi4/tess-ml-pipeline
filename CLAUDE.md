@@ -2,6 +2,16 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+## Session Management
+
+**IMPORTANT:** Before context compaction or session end, ALWAYS update `state.md` with:
+- Current branch and recent commits
+- What was done in this session
+- Next steps / pending tasks
+- Any known issues
+
+This ensures continuity between sessions. Read `state.md` at session start to understand current project state.
+
 ## Project Overview
 
 **TESS FFI Data Processing Pipeline** - Extract stellar photometry from NASA's TESS Full Frame Images, build lightcurves, find variable stars, and export for machine learning.
