@@ -182,8 +182,13 @@ data/
 │           └── sXXX_Y-Z_photometry_checkpoint.csv
 ├── exports/
 │   ├── features/       # ML features (CSV, NPY)
-│   └── timeseries/     # Padded sequences (NPZ)
-variable_stars/         # Variable star analysis
+│   ├── timeseries/     # Padded sequences (NPZ)
+│   └── vsx_submissions/ # VSX submission data
+variable_stars/                    # Variable star analysis (in .gitignore)
+├── _overview/                     # Overview plots (sorted first)
+└── TIC_XXXXXXXXX/                 # Per-star folders
+    ├── VSX_*.png                  # Files for VSX submission (prefix)
+    └── *.png                      # Working analysis files
 lightcurves/            # Saved plots
 photometry_results/     # Converted StarCatalog format
 ```
@@ -230,6 +235,8 @@ export_for_ml(collection, name="sector70", min_completeness=0.6)
 - **TIC matching uses 40 arcsec radius** - Increased from default to improve match rate
 - **Streaming mode auto-resumes** - Safe to interrupt with Ctrl+C
 - **TESS WCS headers are unreliable** - Pipeline uses tess-point library for pixel→RA/Dec
+- **Filter artifacts before analysis** - Use `ARTIFACT_WINDOWS` in config.py (e.g., lunar light in sector 70: BTJD 3215-3221)
+- **Trim sector edges** - First ~0.5d and last ~1d often have instrumental trends
 
 ## References
 
