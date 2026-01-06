@@ -21,6 +21,9 @@ from .StreamingPipeline import convert_to_starcatalog, get_streaming_results
 from .LightcurveBuilder import Lightcurve, LightcurveCollection
 from .MLExport import FeatureExtractor
 
+# VSX query radius in arcseconds
+VSX_SEARCH_RADIUS = 10.0
+
 
 # Output directory
 VARIABLE_STARS_DIR = BASE_DIR / "variable_stars"
@@ -158,6 +161,149 @@ class VariableStarFinder:
 
         print(f"Enriched {len(self.tic_params)} stars with TIC data")
         return len(self.tic_params)
+
+    def cross_match_vsx(self, df: pd.DataFrame = None,
+                        radius_arcsec: float = VSX_SEARCH_RADIUS,
+                        checkpoint_path: Path = None,
+                        checkpoint_every: int = 50) -> pd.DataFrame:
+        """
+        Cross-match stars with AAVSO Variable Star Index (VSX).
+
+        Queries VizieR catalog B/vsx for known variable stars near our coordinates.
+
+        Args:
+            df: DataFrame with 'ra', 'dec' columns (default: use variability_df)
+            radius_arcsec: Search radius in arcseconds (default: 10")
+            checkpoint_path: Path to save/load checkpoint (optional)
+            checkpoint_every: Save checkpoint every N stars (default: 50)
+
+        Returns:
+            DataFrame with VSX matches including variable type, period, etc.
+        """
+        from astroquery.vizier import Vizier
+        from astropy.coordinates import SkyCoord
+        import astropy.units as u
+        import json
+
+        if df is None:
+            if self.variability_df is None:
+                raise ValueError("No data loaded. Call calculate_variability_scores() first or provide df.")
+            df = self.variability_df
+
+        print(f"Cross-matching {len(df)} stars with VSX (radius={radius_arcsec}\" each)...")
+
+        # Initialize results
+        vsx_matches = []
+
+        # Setup Vizier for VSX catalog
+        viz = Vizier(columns=['Name', 'Type', 'Period', 'max', 'min', 'RAJ2000', 'DEJ2000'])
+        viz.ROW_LIMIT = 10  # Max 10 matches per query
+
+        # Checkpoint support
+        start_idx = 0
+        if checkpoint_path:
+            checkpoint_path = Path(checkpoint_path)
+            if checkpoint_path.exists():
+                try:
+                    with open(checkpoint_path, 'r') as f:
+                        checkpoint = json.load(f)
+                    if checkpoint.get('total') == len(df):
+                        start_idx = checkpoint.get('last_idx', 0) + 1
+                        vsx_matches = checkpoint.get('matches', [])
+                        print(f"Resuming VSX query from {start_idx}/{len(df)}")
+                except Exception as e:
+                    print(f"Warning: Could not load checkpoint: {e}")
+
+        def save_checkpoint(idx):
+            if checkpoint_path:
+                ckpt = {
+                    'last_idx': idx,
+                    'matches': vsx_matches,
+                    'total': len(df)
+                }
+                with open(checkpoint_path, 'w') as f:
+                    json.dump(ckpt, f)
+
+        actual_idx = start_idx
+
+        try:
+            for i, (idx, row) in enumerate(tqdm(
+                list(df.iterrows())[start_idx:],
+                total=len(df),
+                desc="Querying VSX",
+                unit="star",
+                initial=start_idx
+            )):
+                actual_idx = start_idx + i
+
+                if pd.isna(row['ra']) or pd.isna(row['dec']):
+                    continue
+
+                try:
+                    coord = SkyCoord(ra=row['ra'] * u.deg, dec=row['dec'] * u.deg)
+                    result = viz.query_region(coord, radius=radius_arcsec * u.arcsec, catalog="B/vsx")
+
+                    if result and len(result) > 0 and len(result[0]) > 0:
+                        vsx_table = result[0]
+                        # Find closest match
+                        vsx_coords = SkyCoord(ra=vsx_table['RAJ2000'], dec=vsx_table['DEJ2000'])
+                        sep = coord.separation(vsx_coords)
+                        nearest = sep.argmin()
+
+                        match = {
+                            'star_id': row.get('star_id', f'idx_{idx}'),
+                            'tic_id': row.get('tic_id'),
+                            'our_ra': row['ra'],
+                            'our_dec': row['dec'],
+                            'vsx_name': str(vsx_table['Name'][nearest]),
+                            'vsx_type': str(vsx_table['Type'][nearest]) if 'Type' in vsx_table.colnames else None,
+                            'vsx_period': float(vsx_table['Period'][nearest]) if 'Period' in vsx_table.colnames and not np.ma.is_masked(vsx_table['Period'][nearest]) else None,
+                            'vsx_max_mag': float(vsx_table['max'][nearest]) if 'max' in vsx_table.colnames and not np.ma.is_masked(vsx_table['max'][nearest]) else None,
+                            'vsx_min_mag': float(vsx_table['min'][nearest]) if 'min' in vsx_table.colnames and not np.ma.is_masked(vsx_table['min'][nearest]) else None,
+                            'sep_arcsec': float(sep[nearest].to(u.arcsec).value),
+                            'our_amplitude': row.get('amplitude'),
+                            'our_amplitude_robust': row.get('amplitude_robust'),
+                            'our_period': row.get('period_1'),
+                            'our_chi2': row.get('reduced_chi2'),
+                        }
+                        vsx_matches.append(match)
+
+                except Exception as e:
+                    # Query failed, continue
+                    pass
+
+                # Checkpoint
+                if checkpoint_path and (actual_idx + 1) % checkpoint_every == 0:
+                    save_checkpoint(actual_idx)
+
+                time.sleep(0.2)  # Rate limit
+
+        except KeyboardInterrupt:
+            print(f"\nInterrupted! Saving checkpoint at {actual_idx}...")
+            save_checkpoint(actual_idx)
+            raise
+        except Exception as e:
+            print(f"\nError at {actual_idx}: {e}")
+            save_checkpoint(actual_idx)
+            raise
+
+        # Final save
+        if checkpoint_path:
+            save_checkpoint(len(df) - 1)
+
+        result_df = pd.DataFrame(vsx_matches)
+
+        # Save to file
+        if len(result_df) > 0:
+            ensure_variable_dirs()
+            output_path = VARIABLE_STARS_DIR / f"{self.session_id}_vsx_matches.csv"
+            result_df.to_csv(output_path, index=False)
+            print(f"\nVSX matches: {len(result_df)} / {len(df)} stars")
+            print(f"Saved to: {output_path}")
+        else:
+            print(f"\nNo VSX matches found in {len(df)} stars")
+
+        return result_df
 
     def calculate_variability_scores(self) -> pd.DataFrame:
         """

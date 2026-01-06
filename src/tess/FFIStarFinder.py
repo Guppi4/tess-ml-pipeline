@@ -71,47 +71,114 @@ def compare_to_background(phot_table, median):
     return phot_table
 
 
-def add_tic_ids(df):
+def add_tic_ids(df, checkpoint_path=None, checkpoint_every=50):
     """
     Add TIC (TESS Input Catalog) IDs to a DataFrame by cross-matching coordinates.
 
     Finds the NEAREST TIC match (not just first result) and saves separation.
-    Note: This function includes rate limiting to avoid overwhelming MAST server.
+    Supports checkpointing to resume after failures.
 
     Args:
         df: DataFrame with 'ra' and 'dec' columns
+        checkpoint_path: Path to save/load checkpoint (optional)
+        checkpoint_every: Save checkpoint every N stars (default: 50)
 
     Returns:
         DataFrame with added 'tic' and 'tic_sep_arcsec' columns
     """
     from astropy.coordinates import SkyCoord
     import astropy.units as u
+    import json
+    from pathlib import Path
 
-    tic_ids = []
-    tic_separations = []
+    # Initialize or load checkpoint
+    start_idx = 0
+    tic_ids = [None] * len(df)
+    tic_separations = [None] * len(df)
 
-    for i, row in tqdm(df.iterrows(), total=len(df), desc="Querying TIC", unit="star"):
-        catalogData = Catalogs.query_object(
-            f"{row['ra']} {row['dec']}",
-            radius=TIC_SEARCH_RADIUS,
-            catalog="TIC"
-        )
-        if len(catalogData) > 0:
-            # Find NEAREST match, not just first result
-            source_coord = SkyCoord(ra=row['ra'] * u.deg, dec=row['dec'] * u.deg)
-            tic_coords = SkyCoord(ra=catalogData['ra'] * u.deg, dec=catalogData['dec'] * u.deg)
-            separations = source_coord.separation(tic_coords)
-            nearest_idx = np.argmin(separations)
+    if checkpoint_path:
+        checkpoint_path = Path(checkpoint_path)
+        if checkpoint_path.exists():
+            try:
+                with open(checkpoint_path, 'r') as f:
+                    checkpoint = json.load(f)
+                saved_total = checkpoint.get('total', len(df))
+                if saved_total != len(df):
+                    print(f"Warning: Checkpoint has {saved_total} stars, current df has {len(df)}. Starting fresh.")
+                else:
+                    start_idx = checkpoint.get('last_idx', 0) + 1
+                    tic_ids = checkpoint.get('tic_ids', tic_ids)
+                    tic_separations = checkpoint.get('tic_separations', tic_separations)
+                    print(f"Resuming from checkpoint: {start_idx}/{len(df)} ({start_idx/len(df)*100:.1f}%)")
+            except Exception as e:
+                print(f"Warning: Could not load checkpoint: {e}")
 
-            tic_id = catalogData['ID'][nearest_idx]
-            tic_sep = separations[nearest_idx].to(u.arcsec).value
-        else:
-            tic_id = None
-            tic_sep = None
+    def save_checkpoint(idx):
+        if checkpoint_path:
+            checkpoint = {
+                'last_idx': idx,
+                'tic_ids': tic_ids,
+                'tic_separations': tic_separations,
+                'total': len(df)
+            }
+            with open(checkpoint_path, 'w') as f:
+                json.dump(checkpoint, f)
 
-        tic_ids.append(tic_id)
-        tic_separations.append(tic_sep)
-        time_module.sleep(TIC_QUERY_DELAY)
+    actual_idx = start_idx  # Define outside try block
+
+    try:
+        for i, (idx, row) in enumerate(tqdm(
+            list(df.iterrows())[start_idx:],
+            total=len(df),
+            desc="Querying TIC",
+            unit="star",
+            initial=start_idx
+        )):
+            actual_idx = start_idx + i
+
+            try:
+                catalogData = Catalogs.query_object(
+                    f"{row['ra']} {row['dec']}",
+                    radius=TIC_SEARCH_RADIUS,
+                    catalog="TIC"
+                )
+                if len(catalogData) > 0:
+                    source_coord = SkyCoord(ra=row['ra'] * u.deg, dec=row['dec'] * u.deg)
+                    tic_coords = SkyCoord(ra=catalogData['ra'] * u.deg, dec=catalogData['dec'] * u.deg)
+                    separations = source_coord.separation(tic_coords)
+                    nearest_idx = np.argmin(separations)
+
+                    # Convert to native Python types for JSON serialization
+                    tic_ids[actual_idx] = str(catalogData['ID'][nearest_idx])
+                    tic_separations[actual_idx] = float(separations[nearest_idx].to(u.arcsec).value)
+                else:
+                    tic_ids[actual_idx] = None
+                    tic_separations[actual_idx] = None
+
+            except Exception as query_error:
+                print(f"\nQuery error at star {actual_idx}: {query_error}")
+                tic_ids[actual_idx] = None
+                tic_separations[actual_idx] = None
+
+            # Save checkpoint periodically
+            if checkpoint_path and (actual_idx + 1) % checkpoint_every == 0:
+                save_checkpoint(actual_idx)
+
+            time_module.sleep(TIC_QUERY_DELAY)
+
+    except KeyboardInterrupt:
+        print(f"\nInterrupted! Saving checkpoint at {actual_idx}...")
+        save_checkpoint(actual_idx)
+        raise
+    except Exception as e:
+        print(f"\nError! Saving checkpoint at {actual_idx}...")
+        save_checkpoint(actual_idx)
+        raise
+
+    # Final save
+    if checkpoint_path:
+        save_checkpoint(len(df) - 1)
+        print(f"Completed! Checkpoint saved to {checkpoint_path}")
 
     df['tic'] = tic_ids
     df['tic_sep_arcsec'] = tic_separations

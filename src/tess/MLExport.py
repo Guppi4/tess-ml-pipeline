@@ -142,16 +142,28 @@ class FeatureExtractor:
 
         # Lomb-Scargle periodogram (handles non-uniform sampling correctly)
         # Frequency range: from 1/time_span to Nyquist (1/2*median_cadence)
+
+        # Filter out NaN values
+        mask = ~np.isnan(btjd) & ~np.isnan(flux)
+        btjd = btjd[mask]
+        flux_norm = flux_norm[mask]
+
+        if len(btjd) < 10:
+            return {}
+
         time_span = btjd[-1] - btjd[0]
-        if time_span <= 0:
+        if time_span <= 0 or np.isnan(time_span):
             return {}
 
         median_cadence = np.median(np.diff(btjd))
-        if median_cadence <= 0:
+        if median_cadence <= 0 or np.isnan(median_cadence):
             return {}
 
         min_freq = 1.0 / time_span
         max_freq = 1.0 / (2 * median_cadence)  # Nyquist frequency
+
+        if np.isnan(min_freq) or np.isnan(max_freq) or min_freq >= max_freq:
+            return {}
 
         # Compute Lomb-Scargle periodogram
         ls = LombScargle(btjd, flux_norm)

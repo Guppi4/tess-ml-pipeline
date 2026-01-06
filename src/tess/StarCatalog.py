@@ -521,16 +521,26 @@ class StarCatalog:
         return catalog
 
 
-    def add_tic_ids(self) -> int:
+    def add_tic_ids(self, checkpoint_path=None) -> int:
         """
         Add TIC IDs to all stars using FFIStarFinder.add_tic_ids().
 
         Stars without TIC match keep their internal STAR_XXXXXX ID.
+        Supports checkpointing to resume after failures.
+
+        Args:
+            checkpoint_path: Path to save/load checkpoint (optional).
+                            If None, uses default path in data/tess/ directory.
 
         Returns:
             Number of stars with TIC matches
         """
         from .FFIStarFinder import add_tic_ids
+        from .config import DATA_DIR
+
+        # Default checkpoint path
+        if checkpoint_path is None:
+            checkpoint_path = DATA_DIR / "tic_checkpoint.json"
 
         # Convert to DataFrame
         records = []
@@ -546,8 +556,8 @@ class StarCatalog:
 
         print(f"Stars with valid coordinates: {len(valid)}/{len(df)}")
 
-        # Use existing function
-        valid = add_tic_ids(valid)
+        # Use existing function with checkpoint
+        valid = add_tic_ids(valid, checkpoint_path=checkpoint_path)
 
         # Update catalog
         tic_count = 0

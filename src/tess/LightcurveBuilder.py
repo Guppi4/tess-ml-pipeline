@@ -35,9 +35,18 @@ class Lightcurve:
         self.data = data.copy()
         self.star_info = star_info or {}
 
-        # Backwards compatibility: rename 'mjd' to 'btjd' if needed
-        if 'mjd' in self.data.columns and 'btjd' not in self.data.columns:
-            self.data = self.data.rename(columns={'mjd': 'btjd'})
+        # Backwards compatibility: handle column name variations
+        # quality vs quality_flag
+        if 'quality' in self.data.columns and 'quality_flag' not in self.data.columns:
+            self.data = self.data.rename(columns={'quality': 'quality_flag'})
+
+        # mjd vs btjd - merge the two columns (some rows have mjd, others have btjd)
+        if 'mjd' in self.data.columns:
+            if 'btjd' not in self.data.columns:
+                self.data = self.data.rename(columns={'mjd': 'btjd'})
+            else:
+                # Fill missing btjd values with mjd values
+                self.data['btjd'] = self.data['btjd'].fillna(self.data['mjd'])
 
         # Ensure sorted by time
         if 'btjd' in self.data.columns:
@@ -211,9 +220,52 @@ class Lightcurve:
 
         return Lightcurve(self.star_id, new_data, self.star_info)
 
-    def get_good_data(self) -> pd.DataFrame:
-        """Return only good quality measurements."""
-        return self.data[self.data['quality_flag'] == 0].copy()
+    def get_good_data(self, exclude_artifacts: bool = False, sector: int = None) -> pd.DataFrame:
+        """
+        Return only good quality measurements.
+
+        Args:
+            exclude_artifacts: If True, also exclude known artifact windows
+            sector: Sector number (required if exclude_artifacts=True)
+
+        Returns:
+            DataFrame with good quality data
+        """
+        mask = self.data['quality_flag'] == 0
+
+        if exclude_artifacts:
+            if sector is None:
+                raise ValueError("sector is required when exclude_artifacts=True")
+            from .config import get_artifact_windows
+            for start, end, _ in get_artifact_windows(sector):
+                mask = mask & ~((self.data['btjd'] >= start) & (self.data['btjd'] <= end))
+
+        return self.data[mask].copy()
+
+    def filter_artifacts(self, sector: int) -> 'Lightcurve':
+        """
+        Return a new Lightcurve with artifact windows removed.
+
+        Args:
+            sector: TESS sector number
+
+        Returns:
+            New Lightcurve instance with artifacts filtered out
+        """
+        from .config import get_artifact_windows
+
+        mask = pd.Series(True, index=self.data.index)
+        windows = get_artifact_windows(sector)
+
+        for start, end, desc in windows:
+            window_mask = (self.data['btjd'] >= start) & (self.data['btjd'] <= end)
+            n_removed = window_mask.sum()
+            if n_removed > 0:
+                print(f"Filtering {n_removed} points: {desc} (BTJD {start}-{end})")
+            mask = mask & ~window_mask
+
+        filtered_data = self.data[mask].copy()
+        return Lightcurve(self.star_id, filtered_data, self.star_info)
 
     def to_arrays(self, good_only: bool = True) -> tuple:
         """
@@ -235,6 +287,156 @@ class Lightcurve:
             data['flux'].values,
             data['flux_error'].values
         )
+
+    def fold(self, period: float, t0: float = None) -> pd.DataFrame:
+        """
+        Phase-fold the lightcurve at a given period.
+
+        Args:
+            period: Folding period in days
+            t0: Reference time (epoch). If None, uses first observation.
+
+        Returns:
+            DataFrame with 'phase', 'flux', 'flux_error' columns, sorted by phase
+        """
+        good_data = self.get_good_data()
+        if len(good_data) == 0:
+            return pd.DataFrame()
+
+        times = good_data['btjd'].values
+        flux = good_data['flux'].values
+        errors = good_data['flux_error'].values
+
+        if t0 is None:
+            t0 = times[0]
+
+        # Calculate phase (0 to 1)
+        phase = ((times - t0) / period) % 1.0
+
+        # Center phase around 0 (-0.5 to 0.5) for better visualization
+        phase = np.where(phase > 0.5, phase - 1.0, phase)
+
+        result = pd.DataFrame({
+            'phase': phase,
+            'flux': flux,
+            'flux_error': errors,
+            'btjd': times
+        }).sort_values('phase').reset_index(drop=True)
+
+        return result
+
+    def plot_folded(self, period: float, t0: float = None, ax=None,
+                    normalized: bool = True, bin_phase: bool = False,
+                    n_bins: int = 50) -> plt.Axes:
+        """
+        Plot phase-folded lightcurve.
+
+        Args:
+            period: Folding period in days
+            t0: Reference epoch
+            ax: Matplotlib axes
+            normalized: Normalize flux before plotting
+            bin_phase: Bin the folded data for cleaner visualization
+            n_bins: Number of phase bins
+
+        Returns:
+            Matplotlib axes
+        """
+        if ax is None:
+            fig, ax = plt.subplots(figsize=(10, 5))
+
+        lc = self.normalize() if normalized else self
+        folded = lc.fold(period, t0)
+
+        if len(folded) == 0:
+            ax.text(0.5, 0.5, 'No data', ha='center', va='center')
+            return ax
+
+        if bin_phase:
+            # Bin the data
+            bins = np.linspace(-0.5, 0.5, n_bins + 1)
+            bin_centers = (bins[:-1] + bins[1:]) / 2
+            bin_flux = []
+            bin_err = []
+
+            for i in range(n_bins):
+                mask = (folded['phase'] >= bins[i]) & (folded['phase'] < bins[i+1])
+                if mask.sum() > 0:
+                    bin_flux.append(np.median(folded.loc[mask, 'flux']))
+                    bin_err.append(np.std(folded.loc[mask, 'flux']) / np.sqrt(mask.sum()))
+                else:
+                    bin_flux.append(np.nan)
+                    bin_err.append(np.nan)
+
+            ax.errorbar(bin_centers, bin_flux, yerr=bin_err, fmt='o-',
+                       markersize=6, capsize=2, label='Binned')
+        else:
+            ax.scatter(folded['phase'], folded['flux'], s=10, alpha=0.6)
+
+        ax.axhline(1.0 if normalized else np.median(folded['flux']),
+                  color='gray', linestyle='--', alpha=0.5)
+        ax.set_xlabel('Phase')
+        ax.set_ylabel('Normalized Flux' if normalized else 'Flux')
+        ax.set_title(f'{self.star_id} | Period = {period:.4f} days')
+        ax.set_xlim(-0.5, 0.5)
+
+        return ax
+
+    def bls_periodogram(self, min_period: float = 0.5, max_period: float = 15.0,
+                        n_periods: int = 5000) -> dict:
+        """
+        Compute Box Least Squares periodogram for transit/eclipse detection.
+
+        BLS is optimized for finding periodic box-shaped dips (transits, eclipses).
+
+        Args:
+            min_period: Minimum period to search (days)
+            max_period: Maximum period to search (days)
+            n_periods: Number of trial periods
+
+        Returns:
+            dict with 'periods', 'power', 'best_period', 'best_t0', 'best_duration', 'best_depth'
+        """
+        from astropy.timeseries import BoxLeastSquares
+
+        good_data = self.get_good_data()
+        if len(good_data) < 20:
+            return {'periods': [], 'power': [], 'best_period': None}
+
+        times = good_data['btjd'].values
+        flux = good_data['flux'].values
+        errors = good_data['flux_error'].values
+
+        # Normalize
+        median_flux = np.median(flux)
+        norm_flux = flux / median_flux
+        norm_err = errors / median_flux
+
+        # Create BLS model
+        model = BoxLeastSquares(times, norm_flux, dy=norm_err)
+
+        # Search periods
+        periods = np.linspace(min_period, max_period, n_periods)
+        periodogram = model.power(periods, duration=np.linspace(0.01, 0.2, 10))
+
+        # Find best period
+        best_idx = np.argmax(periodogram.power)
+        best_period = periodogram.period[best_idx]
+
+        # Get transit parameters at best period
+        stats = model.compute_stats(best_period,
+                                    periodogram.duration[best_idx],
+                                    periodogram.transit_time[best_idx])
+
+        return {
+            'periods': periodogram.period,
+            'power': periodogram.power,
+            'best_period': best_period,
+            'best_t0': periodogram.transit_time[best_idx],
+            'best_duration': periodogram.duration[best_idx],
+            'best_depth': stats['depth'][0] if 'depth' in stats else None,
+            'snr': periodogram.power[best_idx]
+        }
 
     def plot(self, ax=None, show_errors: bool = True,
              show_bad: bool = True, normalized: bool = False,

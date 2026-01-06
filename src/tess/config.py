@@ -107,6 +107,40 @@ COG_RADII_MAX = 10
 SIGMA_CLIP_VALUE = 3.0
 
 # ============================================================================
+# Known Artifact Windows
+# ============================================================================
+
+# Time periods with known data quality issues (e.g., scattered light from Moon)
+# Format: {sector: [(btjd_start, btjd_end, description), ...]}
+# Source: https://heasarc.gsfc.nasa.gov/docs/tess/sector_summary.html
+ARTIFACT_WINDOWS = {
+    70: [
+        (3215.0, 3221.0, "Lunar scattered light - Orbit 147b"),
+    ],
+    # Add more sectors as needed:
+    # 71: [(start, end, "description"), ...],
+}
+
+
+def get_artifact_windows(sector: int) -> list:
+    """
+    Get list of artifact windows for a sector.
+
+    Returns:
+        List of (btjd_start, btjd_end, description) tuples
+    """
+    return ARTIFACT_WINDOWS.get(sector, [])
+
+
+def is_in_artifact_window(btjd: float, sector: int) -> bool:
+    """Check if a BTJD time is within any artifact window for the sector."""
+    for start, end, _ in get_artifact_windows(sector):
+        if start <= btjd <= end:
+            return True
+    return False
+
+
+# ============================================================================
 # TIC Catalog Query Settings
 # ============================================================================
 
