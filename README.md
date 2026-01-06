@@ -178,9 +178,10 @@ project/
 │       └── timeseries/*.npz            # Padded sequences
 │
 ├── variable_stars/             # Variable star analysis
-│   ├── s0070_1-1_candidates.csv    # Top candidates
-│   ├── s0070_1-1_all_stars.csv     # All analyzed stars
-│   └── plots/                      # Lightcurve plots
+│   ├── _overview/                    # Overview plots (candidates, etc.)
+│   └── TIC_XXXXXXXXX/                # Per-star analysis folders
+│       ├── VSX_*.png                 # Files for VSX submission
+│       └── *.png                     # Working analysis plots
 │
 └── lightcurves/                # Saved plots
 ```
@@ -193,7 +194,7 @@ project/
 |--------|-------------|-------|
 | `star_id` | Unique identifier | STAR_XXXXXX |
 | `epoch` | Observation index | 0, 1, 2, ... |
-| `mjd` | Modified Julian Date | days |
+| `btjd` | Barycentric TESS Julian Date | days (BJD - 2457000) |
 | `flux` | Brightness | counts/sec |
 | `flux_error` | Uncertainty | counts/sec |
 | `quality` | Quality flag | 0=good, 1=edge, 2=negative, 3=outside |
