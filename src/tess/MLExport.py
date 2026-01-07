@@ -20,12 +20,14 @@ from typing import List, Dict, Optional, Tuple
 from scipy import stats
 from astropy.timeseries import LombScargle
 
-from .config import BASE_DIR, ensure_directories
+from .config import BASE_DIR, ensure_directories, get_exports_dir
 from .LightcurveBuilder import Lightcurve, LightcurveCollection
 
 
-# Output directory
-ML_DATA_DIR = BASE_DIR / "ml_data"
+# Output directory (new structure: data/exports/)
+ML_DATA_DIR = get_exports_dir()
+# Legacy path for backwards compatibility
+LEGACY_ML_DATA_DIR = BASE_DIR / "ml_data"
 
 
 def ensure_ml_directories():
@@ -33,6 +35,8 @@ def ensure_ml_directories():
     ML_DATA_DIR.mkdir(parents=True, exist_ok=True)
     (ML_DATA_DIR / "features").mkdir(exist_ok=True)
     (ML_DATA_DIR / "timeseries").mkdir(exist_ok=True)
+    # Also ensure legacy for backwards compatibility
+    LEGACY_ML_DATA_DIR.mkdir(parents=True, exist_ok=True)
 
 
 class FeatureExtractor:
@@ -55,7 +59,7 @@ class FeatureExtractor:
 
         flux = good_data['flux'].values
         errors = good_data['flux_error'].values
-        mjd = good_data['mjd'].values
+        btjd = good_data['btjd'].values
 
         features = {}
 
@@ -94,7 +98,7 @@ class FeatureExtractor:
             features['weighted_std'] = np.sqrt(np.sum(weights * (flux - features['weighted_mean']) ** 2) / np.sum(weights))
 
         # Time-domain features
-        features['time_span'] = mjd[-1] - mjd[0]
+        features['time_span'] = btjd[-1] - btjd[0]
         features['n_observations'] = len(flux)
 
         # Flux differences
@@ -129,7 +133,7 @@ class FeatureExtractor:
             return {}
 
         flux = good_data['flux'].values
-        mjd = good_data['mjd'].values
+        btjd = good_data['btjd'].values
 
         features = {}
 
@@ -138,19 +142,31 @@ class FeatureExtractor:
 
         # Lomb-Scargle periodogram (handles non-uniform sampling correctly)
         # Frequency range: from 1/time_span to Nyquist (1/2*median_cadence)
-        time_span = mjd[-1] - mjd[0]
-        if time_span <= 0:
+
+        # Filter out NaN values
+        mask = ~np.isnan(btjd) & ~np.isnan(flux)
+        btjd = btjd[mask]
+        flux_norm = flux_norm[mask]
+
+        if len(btjd) < 10:
             return {}
 
-        median_cadence = np.median(np.diff(mjd))
-        if median_cadence <= 0:
+        time_span = btjd[-1] - btjd[0]
+        if time_span <= 0 or np.isnan(time_span):
+            return {}
+
+        median_cadence = np.median(np.diff(btjd))
+        if median_cadence <= 0 or np.isnan(median_cadence):
             return {}
 
         min_freq = 1.0 / time_span
         max_freq = 1.0 / (2 * median_cadence)  # Nyquist frequency
 
+        if np.isnan(min_freq) or np.isnan(max_freq) or min_freq >= max_freq:
+            return {}
+
         # Compute Lomb-Scargle periodogram
-        ls = LombScargle(mjd, flux_norm)
+        ls = LombScargle(btjd, flux_norm)
         freqs, power = ls.autopower(
             minimum_frequency=min_freq,
             maximum_frequency=max_freq
@@ -286,7 +302,7 @@ class MLDataset:
             star_ids.append(lc.star_id)
 
             # Get data
-            mjd, flux, error = lc.to_arrays(good_only=False)
+            btjd, flux, error = lc.to_arrays(good_only=False)
 
             if normalize:
                 median_flux = np.nanmedian(flux)

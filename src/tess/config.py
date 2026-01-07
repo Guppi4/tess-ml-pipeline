@@ -1,11 +1,13 @@
 """
-Configuration settings for TESS FFI Data Processing pipeline.
+Configuration settings for photometry pipeline.
 
-All paths and parameters are centralized here to avoid hardcoding.
+Supports multiple satellites (TESS, Kepler, K2, etc.)
+All paths and parameters are centralized here.
 """
 
 import os
 from pathlib import Path
+from typing import Optional
 
 # ============================================================================
 # Directory Paths
@@ -14,12 +16,51 @@ from pathlib import Path
 # Base directory (project root)
 BASE_DIR = Path(__file__).resolve().parent.parent.parent
 
-# Data directories (relative to project root)
+# Main data directory (all satellite data goes here)
+DATA_DIR = BASE_DIR / "data"
+
+# Legacy paths (for backward compatibility)
 FITS_DIR = BASE_DIR / "FITS"
 CALIBRATED_DATA_DIR = BASE_DIR / "calibrated_data"
 PHOTOMETRY_RESULTS_DIR = BASE_DIR / "photometry_results"
 LIGHTCURVES_DIR = BASE_DIR / "lightcurves"
 MANIFEST_DIR = BASE_DIR / "manifests"
+
+# ============================================================================
+# Satellite-specific path helpers
+# ============================================================================
+
+def get_satellite_dir(satellite: str = "tess") -> Path:
+    """Get root directory for a satellite's data."""
+    return DATA_DIR / satellite
+
+
+def get_tess_sector_dir(sector: int, camera: int = None, ccd: int = None) -> Path:
+    """
+    Get directory for TESS sector data.
+
+    Args:
+        sector: Sector number (1-99)
+        camera: Camera number (1-4), optional
+        ccd: CCD number (1-4), optional
+
+    Returns:
+        Path to sector/camera/ccd directory
+
+    Examples:
+        get_tess_sector_dir(70) -> data/tess/sector_070/
+        get_tess_sector_dir(70, 1, 1) -> data/tess/sector_070/cam1_ccd1/
+    """
+    path = DATA_DIR / "tess" / f"sector_{sector:03d}"
+    if camera is not None and ccd is not None:
+        path = path / f"cam{camera}_ccd{ccd}"
+    return path
+
+
+def get_exports_dir() -> Path:
+    """Get directory for ML exports."""
+    return DATA_DIR / "exports"
+
 
 # ============================================================================
 # Cross-matching Parameters
@@ -55,8 +96,6 @@ DAOFIND_THRESHOLD_SIGMA = 3.0
 DEFAULT_APERTURE_RADIUS = 3.0
 
 # Local background annulus radii (pixels)
-# Inner radius should be larger than aperture to avoid star flux
-# Outer radius should be small enough to capture local background variations
 ANNULUS_R_IN = 5.0
 ANNULUS_R_OUT = 8.0
 
@@ -68,11 +107,44 @@ COG_RADII_MAX = 10
 SIGMA_CLIP_VALUE = 3.0
 
 # ============================================================================
+# Known Artifact Windows
+# ============================================================================
+
+# Time periods with known data quality issues (e.g., scattered light from Moon)
+# Format: {sector: [(btjd_start, btjd_end, description), ...]}
+# Source: https://heasarc.gsfc.nasa.gov/docs/tess/sector_summary.html
+ARTIFACT_WINDOWS = {
+    70: [
+        (3215.0, 3221.0, "Lunar scattered light - Orbit 147b"),
+    ],
+    # Add more sectors as needed:
+    # 71: [(start, end, "description"), ...],
+}
+
+
+def get_artifact_windows(sector: int) -> list:
+    """
+    Get list of artifact windows for a sector.
+
+    Returns:
+        List of (btjd_start, btjd_end, description) tuples
+    """
+    return ARTIFACT_WINDOWS.get(sector, [])
+
+
+def is_in_artifact_window(btjd: float, sector: int) -> bool:
+    """Check if a BTJD time is within any artifact window for the sector."""
+    for start, end, _ in get_artifact_windows(sector):
+        if start <= btjd <= end:
+            return True
+    return False
+
+
+# ============================================================================
 # TIC Catalog Query Settings
 # ============================================================================
 
 # Search radius in degrees for TIC cross-matching
-# Was 0.001 (~3.6"), too strict for TESS pixel scale (~21")
 TIC_SEARCH_RADIUS = 0.02
 
 # Delay between TIC queries (seconds) to avoid rate limiting
@@ -84,8 +156,23 @@ TIC_QUERY_DELAY = 0.5
 
 def ensure_directories():
     """Create all required output directories if they don't exist."""
-    for directory in [FITS_DIR, CALIBRATED_DATA_DIR, PHOTOMETRY_RESULTS_DIR, LIGHTCURVES_DIR, MANIFEST_DIR]:
+    # Legacy directories
+    for directory in [FITS_DIR, CALIBRATED_DATA_DIR, PHOTOMETRY_RESULTS_DIR,
+                      LIGHTCURVES_DIR, MANIFEST_DIR]:
         directory.mkdir(parents=True, exist_ok=True)
+
+    # New data structure
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+    (DATA_DIR / "tess").mkdir(exist_ok=True)
+    (DATA_DIR / "exports" / "features").mkdir(parents=True, exist_ok=True)
+    (DATA_DIR / "exports" / "timeseries").mkdir(parents=True, exist_ok=True)
+
+
+def ensure_tess_sector_dir(sector: int, camera: int, ccd: int) -> Path:
+    """Create and return directory for TESS sector data."""
+    path = get_tess_sector_dir(sector, camera, ccd)
+    path.mkdir(parents=True, exist_ok=True)
+    return path
 
 
 def get_mast_url(sector: str, year: str, day: str, camera: str, ccd: str) -> str:

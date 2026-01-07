@@ -193,18 +193,28 @@ class ProgressDisplay:
 from .config import (
     BASE_DIR, PHOTOMETRY_RESULTS_DIR, MANIFEST_DIR,
     MAST_FFI_BASE_URL, DAOFIND_FWHM, DAOFIND_THRESHOLD_SIGMA,
-    DEFAULT_APERTURE_RADIUS, ANNULUS_R_IN, ANNULUS_R_OUT, ensure_directories
+    DEFAULT_APERTURE_RADIUS, ANNULUS_R_IN, ANNULUS_R_OUT,
+    ensure_directories, get_tess_sector_dir, ensure_tess_sector_dir
 )
 
 
-# Streaming results directory
-STREAMING_DIR = BASE_DIR / "streaming_results"
+# Legacy streaming results directory (for backwards compatibility)
+LEGACY_STREAMING_DIR = BASE_DIR / "streaming_results"
 
 
-def ensure_streaming_dirs():
+def get_output_dir(sector: int, camera: int, ccd: int) -> Path:
+    """Get output directory for streaming results."""
+    return get_tess_sector_dir(sector, camera, ccd)
+
+
+def ensure_streaming_dirs(sector: int = None, camera: int = None, ccd: int = None):
     """Create streaming directories."""
-    STREAMING_DIR.mkdir(parents=True, exist_ok=True)
-    (STREAMING_DIR / "checkpoints").mkdir(exist_ok=True)
+    if sector is not None and camera is not None and ccd is not None:
+        output_dir = ensure_tess_sector_dir(sector, camera, ccd)
+        (output_dir / "checkpoints").mkdir(exist_ok=True)
+    # Also ensure legacy dir for backwards compatibility
+    LEGACY_STREAMING_DIR.mkdir(parents=True, exist_ok=True)
+    (LEGACY_STREAMING_DIR / "checkpoints").mkdir(exist_ok=True)
 
 
 class StreamingProcessor:
@@ -222,6 +232,9 @@ class StreamingProcessor:
 
         self.session_id = f"s{sector:04d}_{camera}-{ccd}"
 
+        # Output directory (new structure: data/tess/sector_XXX/camY_ccdZ/)
+        self.output_dir = get_output_dir(sector, int(camera), int(ccd))
+
         # Results storage
         self.star_catalog = {}  # star_id -> {ra, dec, ...}
         self.photometry_records = []  # List of measurement records
@@ -232,26 +245,44 @@ class StreamingProcessor:
         self.reference_stars = None
         self.reference_epoch_idx = None
 
-        # Checkpoint
-        self.checkpoint_path = STREAMING_DIR / "checkpoints" / f"{self.session_id}_checkpoint.json"
+        # Cadence skip (saved in checkpoint for consistency)
+        self._cadence_skip = None
 
-        ensure_streaming_dirs()
+        # Checkpoint path (new location)
+        self.checkpoint_path = self.output_dir / "checkpoints" / f"{self.session_id}_checkpoint.json"
+        # Legacy checkpoint path for loading old data
+        self._legacy_checkpoint_path = LEGACY_STREAMING_DIR / "checkpoints" / f"{self.session_id}_checkpoint.json"
+
+        ensure_streaming_dirs(sector, int(camera), int(ccd))
 
     def load_checkpoint(self) -> bool:
         """Load previous progress if exists."""
+        # Check new path first, then legacy
+        checkpoint_path = None
+        data_dir = None
+
         if self.checkpoint_path.exists():
+            checkpoint_path = self.checkpoint_path
+            data_dir = self.output_dir
+        elif self._legacy_checkpoint_path.exists():
+            checkpoint_path = self._legacy_checkpoint_path
+            data_dir = LEGACY_STREAMING_DIR
+            print(f"  (Loading from legacy location)")
+
+        if checkpoint_path:
             try:
-                with open(self.checkpoint_path, 'r') as f:
+                with open(checkpoint_path, 'r') as f:
                     data = json.load(f)
 
                 self.processed_files = set(data.get('processed_files', []))
                 self.epoch_metadata = data.get('epoch_metadata', [])
                 self.star_catalog = data.get('star_catalog', {})
                 self.reference_epoch_idx = data.get('reference_epoch_idx')
+                self._cadence_skip = data.get('cadence_skip')  # May be None for old checkpoints
 
                 # Load photometry from CSV (fallback to parquet for old checkpoints)
-                csv_path = STREAMING_DIR / f"{self.session_id}_photometry_checkpoint.csv"
-                parquet_path = STREAMING_DIR / f"{self.session_id}_photometry.parquet"
+                csv_path = data_dir / f"{self.session_id}_photometry_checkpoint.csv"
+                parquet_path = data_dir / f"{self.session_id}_photometry.parquet"
 
                 if csv_path.exists():
                     df = pd.read_csv(csv_path)
@@ -284,8 +315,12 @@ class StreamingProcessor:
             'epoch_metadata': self.epoch_metadata,
             'star_catalog': self.star_catalog,
             'reference_epoch_idx': self.reference_epoch_idx,
+            'cadence_skip': self._cadence_skip,
             'last_update': datetime.now().isoformat()
         }
+
+        # Ensure checkpoint directory exists
+        self.checkpoint_path.parent.mkdir(parents=True, exist_ok=True)
 
         with open(self.checkpoint_path, 'w') as f:
             json.dump(checkpoint_data, f, indent=2, default=str)
@@ -293,7 +328,7 @@ class StreamingProcessor:
         # Save photometry to CSV (no external dependencies)
         if self.photometry_records:
             df = pd.DataFrame(self.photometry_records)
-            csv_path = STREAMING_DIR / f"{self.session_id}_photometry_checkpoint.csv"
+            csv_path = self.output_dir / f"{self.session_id}_photometry_checkpoint.csv"
             df.to_csv(csv_path, index=False)
 
     def get_sector_files(self) -> List[Dict]:
@@ -330,6 +365,10 @@ class StreamingProcessor:
                             })
                 except:
                     continue
+
+        # Sort by filename to ensure chronological order
+        # TESS filenames contain timestamp: tess2023001120000-s0070-...
+        files.sort(key=lambda x: x['filename'])
 
         return files
 
@@ -587,7 +626,7 @@ class StreamingProcessor:
             record = {
                 'star_id': star_id,
                 'epoch': epoch_idx,
-                'mjd': metadata.get('btjd_mid'),  # BTJD mid-time
+                'btjd': metadata.get('btjd_mid'),  # BTJD mid-time
                 'flux': float(flux),
                 'flux_error': float(flux_error),
                 'quality': int(quality),
@@ -630,7 +669,7 @@ class StreamingProcessor:
                 record = {
                     'star_id': star_id,
                     'epoch': epoch_idx,
-                    'mjd': metadata.get('btjd_mid'),  # BTJD mid-time
+                    'btjd': metadata.get('btjd_mid'),  # BTJD mid-time
                     'flux': np.nan,
                     'flux_error': np.nan,
                     'quality': 3,  # Outside image
@@ -682,7 +721,7 @@ class StreamingProcessor:
             record = {
                 'star_id': star_id,
                 'epoch': epoch_idx,
-                'mjd': metadata.get('btjd_mid'),  # BTJD mid-time
+                'btjd': metadata.get('btjd_mid'),  # BTJD mid-time
                 'flux': float(flux),
                 'flux_error': float(flux_error),
                 'quality': int(quality),
@@ -693,20 +732,34 @@ class StreamingProcessor:
 
         return photometry_records
 
-    def run(self, resume: bool = True, workers: int = 5) -> Dict:
+    def run(self, resume: bool = True, workers: int = 5, cadence_skip: int = 1) -> Dict:
         """
         Run the streaming pipeline with parallel downloading.
 
         Args:
             resume: If True, resume from checkpoint if available
             workers: Number of parallel download workers (default 6)
+            cadence_skip: Take every Nth file (default 1 = all files)
+                         6 = 3/hour, 9 = 2/hour, 18 = 1/hour
 
         Returns:
             Summary dictionary
         """
+        # Validate cadence_skip
+        if not isinstance(cadence_skip, int) or cadence_skip < 1:
+            raise ValueError(f"cadence_skip must be a positive integer, got {cadence_skip}")
+
         # Try to resume
         if resume:
             self.load_checkpoint()
+
+        # Check if cadence_skip changed from checkpoint
+        if self._cadence_skip is not None and self._cadence_skip != cadence_skip:
+            print(f"\n  WARNING: cadence_skip changed from {self._cadence_skip} to {cadence_skip}")
+            print(f"  This may result in inconsistent epoch numbering!")
+
+        # Store current cadence_skip
+        self._cadence_skip = cadence_skip
 
         # Get file list (silently)
         print("\n  Fetching file list from MAST...", end="", flush=True)
@@ -716,6 +769,13 @@ class StreamingProcessor:
         if not files:
             print("  No files found!")
             return {'error': 'No files found'}
+
+        # Apply cadence skip (take every Nth file)
+        original_count = len(files)
+        if cadence_skip > 1:
+            files = files[::cadence_skip]
+            effective_cadence = 200 * cadence_skip  # seconds between samples
+            print(f"  Cadence skip={cadence_skip}: {original_count} -> {len(files)} files (~{effective_cadence//60} min between samples)")
 
         # Add unique file index to each file (for thread-safe epoch numbering)
         for idx, f in enumerate(files):
@@ -890,7 +950,7 @@ class StreamingProcessor:
 
     def run_async(self, resume: bool = True, download_workers: int = 10,
                   process_workers: int = 4, batch_size: int = 50,
-                  max_files: int = None) -> Dict:
+                  max_files: int = None, cadence_skip: int = 1) -> Dict:
         """
         Run the streaming pipeline with high-performance async downloading.
 
@@ -905,17 +965,31 @@ class StreamingProcessor:
             process_workers: Number of parallel processing threads (default 4)
             batch_size: Files per batch (default 50)
             max_files: Maximum number of files to process (default None = all)
+            cadence_skip: Take every Nth file (default 1 = all files)
+                         6 = 3/hour, 9 = 2/hour, 18 = 1/hour
 
         Returns:
             Summary dictionary
         """
+        # Validate cadence_skip
+        if not isinstance(cadence_skip, int) or cadence_skip < 1:
+            raise ValueError(f"cadence_skip must be a positive integer, got {cadence_skip}")
+
         if not ASYNC_AVAILABLE:
             print("  Warning: aiohttp not available, falling back to sync mode")
-            return self.run(resume=resume, workers=process_workers)
+            return self.run(resume=resume, workers=process_workers, cadence_skip=cadence_skip)
 
         # Try to resume
         if resume:
             self.load_checkpoint()
+
+        # Check if cadence_skip changed from checkpoint
+        if self._cadence_skip is not None and self._cadence_skip != cadence_skip:
+            print(f"\n  WARNING: cadence_skip changed from {self._cadence_skip} to {cadence_skip}")
+            print(f"  This may result in inconsistent epoch numbering!")
+
+        # Store current cadence_skip
+        self._cadence_skip = cadence_skip
 
         # Get file list
         print("\n  Fetching file list from MAST...", end="", flush=True)
@@ -925,6 +999,13 @@ class StreamingProcessor:
         if not files:
             print("  No files found!")
             return {'error': 'No files found'}
+
+        # Apply cadence skip (take every Nth file)
+        original_count = len(files)
+        if cadence_skip > 1:
+            files = files[::cadence_skip]
+            effective_cadence = 200 * cadence_skip  # seconds between samples
+            print(f"  Cadence skip={cadence_skip}: {original_count} -> {len(files)} files (~{effective_cadence//60} min between samples)")
 
         # Add unique file index to each file (for thread-safe epoch numbering)
         for idx, f in enumerate(files):
@@ -1044,7 +1125,7 @@ class StreamingProcessor:
     def _finalize(self) -> Dict:
         """Create final output files."""
         # Save star catalog
-        catalog_path = STREAMING_DIR / f"{self.session_id}_catalog.json"
+        catalog_path = self.output_dir / f"{self.session_id}_catalog.json"
         with open(catalog_path, 'w') as f:
             json.dump({
                 'n_stars': len(self.star_catalog),
@@ -1053,12 +1134,12 @@ class StreamingProcessor:
             }, f, indent=2, default=str)
 
         # Save photometry as CSV
-        csv_path = STREAMING_DIR / f"{self.session_id}_photometry.csv"
+        csv_path = self.output_dir / f"{self.session_id}_photometry.csv"
         df = pd.DataFrame(self.photometry_records)
         df.to_csv(csv_path, index=False)
 
         # Try to save as parquet if pyarrow is available (more compact)
-        parquet_path = STREAMING_DIR / f"{self.session_id}_photometry.parquet"
+        parquet_path = self.output_dir / f"{self.session_id}_photometry.parquet"
         try:
             df.to_parquet(parquet_path, index=False)
         except ImportError:
@@ -1066,7 +1147,7 @@ class StreamingProcessor:
 
         # Create summary
         summary = self._create_summary()
-        summary_path = STREAMING_DIR / f"{self.session_id}_summary.json"
+        summary_path = self.output_dir / f"{self.session_id}_summary.json"
         with open(summary_path, 'w') as f:
             json.dump(summary, f, indent=2, default=str)
 
@@ -1074,14 +1155,14 @@ class StreamingProcessor:
         if hasattr(self, 'display') and self.display:
             data_size = csv_path.stat().st_size / 1024 / 1024
             self.display.show_summary(
-                output_dir=STREAMING_DIR,
+                output_dir=self.output_dir,
                 catalog_file=catalog_path.name,
                 data_file=csv_path.name,
                 data_size_mb=data_size
             )
         else:
             # Fallback simple output
-            print(f"\n  Results saved to: {STREAMING_DIR}")
+            print(f"\n  Results saved to: {self.output_dir}")
             print(f"    Stars: {len(self.star_catalog):,}")
             print(f"    Epochs: {len(self.epoch_metadata):,}")
 
@@ -1102,12 +1183,14 @@ class StreamingProcessor:
             'files_processed': len(self.processed_files),
         }
 
-        if len(df) > 0 and 'mjd' in df.columns:
-            mjd_values = df['mjd'].dropna()
-            if len(mjd_values) > 0:
-                summary['mjd_start'] = float(mjd_values.min())
-                summary['mjd_end'] = float(mjd_values.max())
-                summary['time_span_days'] = summary['mjd_end'] - summary['mjd_start']
+        # Check for btjd column (new) or mjd column (legacy)
+        time_col = 'btjd' if 'btjd' in df.columns else 'mjd' if 'mjd' in df.columns else None
+        if len(df) > 0 and time_col:
+            btjd_values = df[time_col].dropna()
+            if len(btjd_values) > 0:
+                summary['btjd_start'] = float(btjd_values.min())
+                summary['btjd_end'] = float(btjd_values.max())
+                summary['time_span_days'] = summary['btjd_end'] - summary['btjd_start']
 
         if len(df) > 0 and 'quality' in df.columns:
             good = (df['quality'] == 0).sum()
@@ -1120,7 +1203,8 @@ class StreamingProcessor:
 def run_streaming_pipeline(sector: int, camera: str = "1", ccd: str = "1",
                           resume: bool = True, workers: int = 5,
                           add_tic: bool = False, async_mode: bool = True,
-                          download_workers: int = 10, batch_size: int = 50) -> Dict:
+                          download_workers: int = 10, batch_size: int = 50,
+                          cadence_skip: int = 1) -> Dict:
     """
     Convenience function to run streaming pipeline.
 
@@ -1134,6 +1218,8 @@ def run_streaming_pipeline(sector: int, camera: str = "1", ccd: str = "1",
         async_mode: If True, use high-performance async downloading (5-10x faster)
         download_workers: Concurrent downloads in async mode (default 10)
         batch_size: Files per batch in async mode (default 50)
+        cadence_skip: Take every Nth file (default 1 = all files)
+                     6 = 3/hour (~20 min), 9 = 2/hour (~30 min), 18 = 1/hour
 
     Returns:
         Summary dictionary
@@ -1145,13 +1231,14 @@ def run_streaming_pipeline(sector: int, camera: str = "1", ccd: str = "1",
             resume=resume,
             download_workers=download_workers,
             process_workers=workers,
-            batch_size=batch_size
+            batch_size=batch_size,
+            cadence_skip=cadence_skip
         )
     else:
         if async_mode and not ASYNC_AVAILABLE:
             print("  Note: async mode requires 'pip install aiohttp aiofiles'")
             print("  Falling back to standard mode...\n")
-        result = processor.run(resume=resume, workers=workers)
+        result = processor.run(resume=resume, workers=workers, cadence_skip=cadence_skip)
 
     # Add TIC IDs if requested
     if add_tic and processor.star_catalog:
@@ -1167,45 +1254,69 @@ def get_streaming_results(sector: int, camera: str = "1", ccd: str = "1") -> Tup
     """
     Load results from a completed or in-progress streaming run.
 
+    Checks both new data structure (data/tess/sector_XXX/camY_ccdZ/)
+    and legacy location (streaming_results/) for backwards compatibility.
+
     Returns:
         Tuple of (photometry_df, catalog_dict)
     """
     session_id = f"s{sector:04d}_{camera}-{ccd}"
 
-    # Try multiple file locations (final, checkpoint)
-    csv_path = STREAMING_DIR / f"{session_id}_photometry.csv"
-    checkpoint_csv = STREAMING_DIR / f"{session_id}_photometry_checkpoint.csv"
-    parquet_path = STREAMING_DIR / f"{session_id}_photometry.parquet"
+    # New data structure path
+    new_dir = get_output_dir(sector, int(camera), int(ccd))
 
-    catalog_path = STREAMING_DIR / f"{session_id}_catalog.json"
-    checkpoint_json = STREAMING_DIR / "checkpoints" / f"{session_id}_checkpoint.json"
+    # Try multiple file locations (new path first, then legacy, final then checkpoint)
+    paths_to_try = [
+        # New structure
+        (new_dir / f"{session_id}_photometry.csv", "csv"),
+        (new_dir / f"{session_id}_photometry_checkpoint.csv", "csv"),
+        (new_dir / f"{session_id}_photometry.parquet", "parquet"),
+        # Legacy structure
+        (LEGACY_STREAMING_DIR / f"{session_id}_photometry.csv", "csv"),
+        (LEGACY_STREAMING_DIR / f"{session_id}_photometry_checkpoint.csv", "csv"),
+        (LEGACY_STREAMING_DIR / f"{session_id}_photometry.parquet", "parquet"),
+    ]
 
-    # Load photometry data
-    if csv_path.exists():
-        df = pd.read_csv(csv_path)
-    elif checkpoint_csv.exists():
-        df = pd.read_csv(checkpoint_csv)
-        print(f"  Using checkpoint data: {checkpoint_csv.name}")
-    elif parquet_path.exists():
-        df = pd.read_parquet(parquet_path)
-    else:
+    df = None
+    data_dir = None
+    for path, fmt in paths_to_try:
+        if path.exists():
+            if fmt == "csv":
+                df = pd.read_csv(path)
+            else:
+                df = pd.read_parquet(path)
+            data_dir = path.parent
+            if "checkpoint" in path.name:
+                print(f"  Using checkpoint data: {path}")
+            break
+
+    if df is None:
         raise FileNotFoundError(f"No results found for {session_id}")
 
-    # Load catalog
-    if catalog_path.exists():
-        with open(catalog_path, 'r') as f:
-            catalog = json.load(f)
-    elif checkpoint_json.exists():
-        with open(checkpoint_json, 'r') as f:
-            checkpoint = json.load(f)
-        # Build catalog structure from checkpoint
-        catalog = {
-            'n_stars': len(checkpoint.get('star_catalog', {})),
-            'n_epochs': len(checkpoint.get('epoch_metadata', [])),
-            'stars': checkpoint.get('star_catalog', {})
-        }
-        print(f"  Using checkpoint catalog: {checkpoint_json.name}")
-    else:
+    # Load catalog (check new path first, then legacy)
+    catalog_paths = [
+        (data_dir / f"{session_id}_catalog.json", "catalog"),
+        (data_dir / "checkpoints" / f"{session_id}_checkpoint.json", "checkpoint"),
+    ]
+
+    catalog = None
+    for path, cat_type in catalog_paths:
+        if path.exists():
+            with open(path, 'r') as f:
+                data = json.load(f)
+            if cat_type == "catalog":
+                catalog = data
+            else:
+                # Build catalog structure from checkpoint
+                catalog = {
+                    'n_stars': len(data.get('star_catalog', {})),
+                    'n_epochs': len(data.get('epoch_metadata', [])),
+                    'stars': data.get('star_catalog', {})
+                }
+                print(f"  Using checkpoint catalog: {path}")
+            break
+
+    if catalog is None:
         raise FileNotFoundError(f"No catalog found for {session_id}")
 
     return df, catalog
@@ -1246,11 +1357,13 @@ def convert_to_starcatalog(sector: int, camera: str = "1", ccd: str = "1"):
         if star_id not in catalog.photometry:
             continue
 
+        # Support both btjd (new) and mjd (legacy) column names
+        time_value = row.get('btjd', row.get('mjd'))
         catalog.photometry[star_id][epoch] = {
             'flux': row['flux'],
             'flux_error': row['flux_error'],
             'quality_flag': int(row['quality']),  # Rename quality -> quality_flag
-            'mjd': row['mjd'],
+            'btjd': time_value,
             'xcentroid': row.get('x'),
             'ycentroid': row.get('y'),
         }
@@ -1261,9 +1374,10 @@ def convert_to_starcatalog(sector: int, camera: str = "1", ccd: str = "1"):
 
     catalog.n_stars = len(catalog.stars)
 
-    # Build epochs list (mjd column now contains BTJD mid-time)
-    epochs = df.groupby('epoch')['mjd'].first().to_dict()
-    catalog.epochs = [{'metadata': {'btjd_mid': mjd, 'mjd_obs': mjd}} for mjd in sorted(epochs.values())]
+    # Build epochs list - support both btjd (new) and mjd (legacy) column names
+    time_col = 'btjd' if 'btjd' in df.columns else 'mjd'
+    epochs = df.groupby('epoch')[time_col].first().to_dict()
+    catalog.epochs = [{'metadata': {'btjd_mid': btjd, 'mjd_obs': btjd}} for btjd in sorted(epochs.values())]
 
     print(f"Converted to StarCatalog: {catalog.n_stars} stars, {len(catalog.epochs)} epochs")
 

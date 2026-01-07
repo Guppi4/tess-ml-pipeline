@@ -257,7 +257,7 @@ class StarCatalog:
                     'flux': np.nan,
                     'flux_error': np.nan,
                     'quality_flag': 4,  # WCS conversion failed
-                    'mjd': mjd
+                    'btjd': mjd
                 }
                 continue
 
@@ -269,7 +269,7 @@ class StarCatalog:
                     'xcentroid': x,
                     'ycentroid': y,
                     'quality_flag': 3,  # Outside image
-                    'mjd': mjd
+                    'btjd': mjd
                 }
                 continue
 
@@ -326,7 +326,7 @@ class StarCatalog:
                 'quality_flag': int(quality_flag),
                 'snr': float(snr),
                 'background': float(local_bkg_per_pixel),
-                'mjd': mjd
+                'btjd': mjd
             }
 
         return results
@@ -390,7 +390,10 @@ class StarCatalog:
 
         df = pd.DataFrame(records)
         if len(df) > 0:
-            df = df.sort_values('mjd')
+            # Support both btjd (new) and mjd (legacy) column names
+            time_col = 'btjd' if 'btjd' in df.columns else 'mjd' if 'mjd' in df.columns else None
+            if time_col:
+                df = df.sort_values(time_col)
 
         return df
 
@@ -518,16 +521,26 @@ class StarCatalog:
         return catalog
 
 
-    def add_tic_ids(self) -> int:
+    def add_tic_ids(self, checkpoint_path=None) -> int:
         """
         Add TIC IDs to all stars using FFIStarFinder.add_tic_ids().
 
         Stars without TIC match keep their internal STAR_XXXXXX ID.
+        Supports checkpointing to resume after failures.
+
+        Args:
+            checkpoint_path: Path to save/load checkpoint (optional).
+                            If None, uses default path in data/tess/ directory.
 
         Returns:
             Number of stars with TIC matches
         """
         from .FFIStarFinder import add_tic_ids
+        from .config import DATA_DIR
+
+        # Default checkpoint path
+        if checkpoint_path is None:
+            checkpoint_path = DATA_DIR / "tic_checkpoint.json"
 
         # Convert to DataFrame
         records = []
@@ -543,8 +556,8 @@ class StarCatalog:
 
         print(f"Stars with valid coordinates: {len(valid)}/{len(df)}")
 
-        # Use existing function
-        valid = add_tic_ids(valid)
+        # Use existing function with checkpoint
+        valid = add_tic_ids(valid, checkpoint_path=checkpoint_path)
 
         # Update catalog
         tic_count = 0

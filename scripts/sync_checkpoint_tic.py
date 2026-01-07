@@ -1,39 +1,28 @@
-"""Sync TIC data from catalog.json back to checkpoint file."""
-import json
+from astroquery.mast import Catalogs
+from astropy.coordinates import SkyCoord
+import astropy.units as u
 
-def sync_tic_to_checkpoint(session_id: str = "s0070_1-1"):
-    """Copy TIC fields from catalog.json to checkpoint's star_catalog."""
+# Твои координаты: 00 01 37.67 -09 15 43.4
+coord = SkyCoord("00h01m37.67s -09d15m43.4s", frame='icrs')
 
-    catalog_path = f"streaming_results/{session_id}_catalog.json"
-    checkpoint_path = f"streaming_results/checkpoints/{session_id}_checkpoint.json"
+# Или в градусах:
+# RA = (0 + 1/60 + 37.67/3600) * 15 = 0.4069583 deg
+# Dec = -(9 + 15/60 + 43.4/3600) = -9.2620556 deg
 
-    # Load catalog with TIC data
-    print(f"Loading catalog: {catalog_path}")
-    with open(catalog_path, 'r') as f:
-        catalog = json.load(f)
+# Запрос TIC в радиусе 10 arcsec
+result = Catalogs.query_region(
+    coord, 
+    radius=10 * u.arcsec, 
+    catalog="TIC"
+)
 
-    # Load checkpoint
-    print(f"Loading checkpoint: {checkpoint_path}")
-    with open(checkpoint_path, 'r') as f:
-        checkpoint = json.load(f)
-
-    # Sync TIC fields
-    tic_fields = ['tic_id', 'tmag', 'sep_arcsec', 'n_candidates', 'match_quality']
-    updated = 0
-
-    for star_id, star_data in catalog['stars'].items():
-        if star_id in checkpoint['star_catalog']:
-            for field in tic_fields:
-                if field in star_data:
-                    checkpoint['star_catalog'][star_id][field] = star_data[field]
-            updated += 1
-
-    # Save updated checkpoint
-    with open(checkpoint_path, 'w') as f:
-        json.dump(checkpoint, f, indent=2, default=str)
-
-    print(f"Synced TIC data for {updated} stars to checkpoint")
-    print(f"Saved: {checkpoint_path}")
-
-if __name__ == "__main__":
-    sync_tic_to_checkpoint()
+# Показать результаты
+if len(result) > 0:
+    for row in result:
+        print(f"TIC {row['ID']}")
+        print(f"  RA: {row['ra']:.6f}, Dec: {row['dec']:.6f}")
+        print(f"  Tmag: {row['Tmag']:.2f}")
+        print(f"  Distance: {row['dstArcSec']:.2f} arcsec")
+        print()
+else:
+    print("Ничего не найдено")

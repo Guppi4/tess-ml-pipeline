@@ -8,5 +8,17 @@
     ],
     "deny": [],
     "ask": []
+  },
+  "hooks": {
+    "PreCompact": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "echo REMINDER: Update state.md before compacting!"
+          }
+        ]
+      }
+    ]
   }
 }
