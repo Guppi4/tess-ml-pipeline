@@ -1044,14 +1044,31 @@ class StreamingProcessor:
 
         try:
             with tempfile.TemporaryDirectory() as temp_dir:
-                # Process first file sequentially if no reference catalog
+                # Build reference catalog sequentially before parallel processing
+                # Try up to 10 files to build a valid star catalog
                 if self.reference_stars is None and remaining_files:
-                    first_file = remaining_files[0]
-                    remaining_files = remaining_files[1:]
-                    result = self.download_and_process_file(first_file, temp_dir)
-                    self._handle_result(first_file, result)
+                    max_reference_attempts = min(10, len(remaining_files))
+                    reference_built = False
 
-                # Process remaining files in batches
+                    for attempt_idx in range(max_reference_attempts):
+                        ref_file = remaining_files[0]
+                        remaining_files = remaining_files[1:]
+
+                        result = self.download_and_process_file(ref_file, temp_dir)
+                        self._handle_result(ref_file, result)
+
+                        # Check if we have a valid star catalog now
+                        if len(self.star_catalog) > 0:
+                            reference_built = True
+                            break
+
+                    if not reference_built:
+                        raise RuntimeError(
+                            f"Failed to build star catalog after {max_reference_attempts} files. "
+                            "Check if the sector/camera/ccd combination is valid."
+                        )
+
+                # Process remaining files in batches (safe - reference is built)
                 for i in range(0, len(remaining_files), batch_size):
                     batch = remaining_files[i:i + batch_size]
                     self._process_batch_async(

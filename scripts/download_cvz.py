@@ -17,7 +17,7 @@ SECTORS = [61, 62, 63]
 CAMERA = "4"
 CCD = "2"
 CADENCE_SKIP = 6
-WORKERS = 5
+WORKERS = 5  # Reduced from 10 for stability
 
 def print_header():
     print("\n" + "="*70)

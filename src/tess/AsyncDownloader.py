@@ -77,9 +77,9 @@ class AsyncDownloader:
         """
         async with semaphore:
             start = time.time()
-            size = 0
 
             for attempt in range(self.max_retries):
+                size = 0  # Reset size for each attempt (fix: was accumulating on retry)
                 try:
                     async with session.get(url) as response:
                         response.raise_for_status()
@@ -227,7 +227,19 @@ def download_files_async(
     """
     downloader = AsyncDownloader(max_concurrent=max_concurrent)
 
-    # Run async download
+    # Save current event loop (if any) to restore later
+    old_loop = None
+    try:
+        old_loop = asyncio.get_event_loop()
+        if old_loop.is_running():
+            # We're inside an async context (e.g., Jupyter)
+            # Use the coroutine version instead
+            raise RuntimeError("Use download_files_async_coro() in async context")
+    except RuntimeError:
+        # No event loop exists - that's fine
+        pass
+
+    # Create new event loop for sync execution
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
     try:
@@ -237,6 +249,9 @@ def download_files_async(
         return results, downloader.get_stats()
     finally:
         loop.close()
+        # Restore previous event loop if it existed
+        if old_loop is not None and not old_loop.is_closed():
+            asyncio.set_event_loop(old_loop)
 
 
 # For running in existing event loop (e.g., Jupyter)
