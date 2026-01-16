@@ -1225,14 +1225,14 @@ class StreamingProcessor:
                                 time.sleep(1.0 * (2 ** retry))  # Exponential backoff
 
                         # Check result
-                        if result and result.get('valid'):
+                        if result and result.get('valid') and len(self.star_catalog) > 0:
+                            # Success! Got a valid reference catalog
                             self._handle_result(ref_file, result)
-                            # Check if we got a valid catalog
-                            if len(self.star_catalog) > 0:
-                                reference_built = True
-                                break
+                            reference_built = True
+                            break
                         else:
-                            # Failed - add to list for retry in main pipeline
+                            # Failed OR 0 detections - retry with forced photometry later
+                            # Don't call _handle_result (don't mark as processed)
                             failed_during_reference.append(ref_file)
 
                     if not reference_built:
