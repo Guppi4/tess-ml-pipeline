@@ -104,12 +104,16 @@ class AsyncDownloader:
                         )
 
                 except (aiohttp.ClientError, asyncio.TimeoutError) as e:
+                    # Always clean up partial file on error
+                    if filepath.exists():
+                        try:
+                            filepath.unlink()
+                        except:
+                            pass
+
                     if attempt < self.max_retries - 1:
                         delay = self.retry_delay * (2 ** attempt)
                         await asyncio.sleep(delay)
-                        # Clean up partial file
-                        if filepath.exists():
-                            filepath.unlink()
                     else:
                         self.failed_files += 1
                         return DownloadResult(
@@ -120,6 +124,13 @@ class AsyncDownloader:
                         )
 
                 except Exception as e:
+                    # Clean up partial file on non-retryable error
+                    if filepath.exists():
+                        try:
+                            filepath.unlink()
+                        except:
+                            pass
+
                     self.failed_files += 1
                     return DownloadResult(
                         url=url,

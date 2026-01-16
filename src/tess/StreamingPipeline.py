@@ -1200,24 +1200,40 @@ class StreamingProcessor:
                 temp_path = Path(temp_dir)
 
                 # Build reference catalog FIRST (sequential, required)
+                # Uses retries for network errors, skips files with 0 detections
                 if self.reference_stars is None and remaining_files:
-                    max_attempts = min(10, len(remaining_files))
+                    max_files_to_try = min(10, len(remaining_files))
+                    max_retries_per_file = 3
                     reference_built = False
+                    files_tried = 0
 
-                    for attempt_idx in range(max_attempts):
+                    while files_tried < max_files_to_try and remaining_files:
                         ref_file = remaining_files[0]
                         remaining_files = remaining_files[1:]
+                        files_tried += 1
 
-                        result = self.download_and_process_file(ref_file, temp_dir)
+                        # Try this file with retries
+                        result = None
+                        for retry in range(max_retries_per_file):
+                            result = self.download_and_process_file(ref_file, temp_dir)
+
+                            if result and result.get('valid'):
+                                break  # Success
+                            elif retry < max_retries_per_file - 1:
+                                import time
+                                time.sleep(1.0 * (2 ** retry))  # Exponential backoff
+
+                        # Handle result
                         self._handle_result(ref_file, result)
 
+                        # Check if we got a valid catalog
                         if len(self.star_catalog) > 0:
                             reference_built = True
                             break
 
                     if not reference_built:
                         raise RuntimeError(
-                            f"Failed to build star catalog after {max_attempts} files."
+                            f"Failed to build star catalog after trying {files_tried} files."
                         )
 
                 if not remaining_files:
@@ -1240,7 +1256,7 @@ class StreamingProcessor:
                     ) as session:
                         semaphore = asyncio.Semaphore(download_workers)
 
-                        async def download_one(file_info: Dict):
+                        async def download_one(file_info: Dict, max_retries: int = 3):
                             if shutdown_requested.is_set():
                                 return
 
@@ -1249,26 +1265,55 @@ class StreamingProcessor:
                                 filename = file_info['filename']
                                 filepath = temp_path / filename
 
-                                try:
-                                    async with session.get(url) as response:
-                                        response.raise_for_status()
-                                        async with aiofiles.open(filepath, 'wb') as f:
-                                            async for chunk in response.content.iter_chunked(1024 * 1024):
-                                                await f.write(chunk)
+                                for attempt in range(max_retries):
+                                    try:
+                                        async with session.get(url) as response:
+                                            response.raise_for_status()
+                                            async with aiofiles.open(filepath, 'wb') as f:
+                                                async for chunk in response.content.iter_chunked(1024 * 1024):
+                                                    await f.write(chunk)
 
-                                    # Put in queue (blocks if full - backpressure)
-                                    loop = asyncio.get_running_loop()
-                                    await loop.run_in_executor(
-                                        None,
-                                        lambda: file_queue.put((file_info, filepath))
-                                    )
-
-                                except Exception as e:
-                                    with self._results_lock:
-                                        self.display.update(
-                                            success=False,
-                                            error=f"Download {filename}: {e}"
+                                        # Success - put in queue (blocks if full - backpressure)
+                                        loop = asyncio.get_running_loop()
+                                        await loop.run_in_executor(
+                                            None,
+                                            lambda: file_queue.put((file_info, filepath))
                                         )
+                                        return  # Success, exit retry loop
+
+                                    except (aiohttp.ClientError, asyncio.TimeoutError) as e:
+                                        # Clean up partial file
+                                        if filepath.exists():
+                                            try:
+                                                filepath.unlink()
+                                            except:
+                                                pass
+
+                                        if attempt < max_retries - 1:
+                                            # Exponential backoff
+                                            delay = 1.0 * (2 ** attempt)
+                                            await asyncio.sleep(delay)
+                                        else:
+                                            # Final failure
+                                            with self._results_lock:
+                                                self.display.update(
+                                                    success=False,
+                                                    error=f"Download {filename}: {e} (after {max_retries} retries)"
+                                                )
+
+                                    except Exception as e:
+                                        # Non-retryable error
+                                        if filepath.exists():
+                                            try:
+                                                filepath.unlink()
+                                            except:
+                                                pass
+                                        with self._results_lock:
+                                            self.display.update(
+                                                success=False,
+                                                error=f"Download {filename}: {e}"
+                                            )
+                                        return
 
                         # Download all files concurrently
                         tasks = [download_one(f) for f in remaining_files]
