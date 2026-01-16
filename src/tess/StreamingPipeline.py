@@ -1206,6 +1206,7 @@ class StreamingProcessor:
                     max_retries_per_file = 3
                     reference_built = False
                     files_tried = 0
+                    failed_during_reference = []  # Track failed files to retry in main pipeline
 
                     while files_tried < max_files_to_try and remaining_files:
                         ref_file = remaining_files[0]
@@ -1223,18 +1224,25 @@ class StreamingProcessor:
                                 import time
                                 time.sleep(1.0 * (2 ** retry))  # Exponential backoff
 
-                        # Handle result
-                        self._handle_result(ref_file, result)
-
-                        # Check if we got a valid catalog
-                        if len(self.star_catalog) > 0:
-                            reference_built = True
-                            break
+                        # Check result
+                        if result and result.get('valid'):
+                            self._handle_result(ref_file, result)
+                            # Check if we got a valid catalog
+                            if len(self.star_catalog) > 0:
+                                reference_built = True
+                                break
+                        else:
+                            # Failed - add to list for retry in main pipeline
+                            failed_during_reference.append(ref_file)
 
                     if not reference_built:
                         raise RuntimeError(
                             f"Failed to build star catalog after trying {files_tried} files."
                         )
+
+                    # Add failed reference files back to remaining for main pipeline
+                    if failed_during_reference:
+                        remaining_files = failed_during_reference + remaining_files
 
                 if not remaining_files:
                     self.display.close()
