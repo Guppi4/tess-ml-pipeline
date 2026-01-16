@@ -12,7 +12,7 @@ import asyncio
 import aiohttp
 import aiofiles
 from pathlib import Path
-from typing import List, Dict, Optional, Callable, Any
+from typing import List, Dict, Optional, Callable, Any, Tuple
 from dataclasses import dataclass
 import time
 
@@ -172,25 +172,28 @@ class AsyncDownloader:
             connector=connector,
             timeout=self.timeout
         ) as session:
-            tasks = []
-            for file_info in files:
+            # Helper to download and attach file_info to result
+            async def download_with_info(file_info: Dict) -> DownloadResult:
                 url = file_info['url']
                 filename = file_info['filename']
                 filepath = temp_path / filename
+                result = await self.download_file(session, url, filepath, semaphore)
+                result.file_info = file_info
+                return result
 
-                task = asyncio.create_task(
-                    self.download_file(session, url, filepath, semaphore)
-                )
-                tasks.append((file_info, task))
+            # Create all tasks
+            tasks = [download_with_info(fi) for fi in files]
 
-            # Process as completed
-            for i, (file_info, task) in enumerate(tasks):
-                result = await task
-                result.file_info = file_info  # Attach original file_info
+            # Process as completed (not in creation order!)
+            # This prevents slow downloads from blocking progress
+            completed = 0
+            for coro in asyncio.as_completed(tasks):
+                result = await coro
                 results.append(result)
+                completed += 1
 
                 if progress_callback:
-                    progress_callback(i + 1, total)
+                    progress_callback(completed, total)
 
         return results
 
@@ -212,7 +215,7 @@ def download_files_async(
     temp_dir: str,
     max_concurrent: int = 10,
     progress_callback: Optional[Callable] = None
-) -> List[DownloadResult]:
+) -> Tuple[List[DownloadResult], Dict]:
     """
     Convenience function to download files asynchronously.
 
@@ -223,21 +226,23 @@ def download_files_async(
         progress_callback: Optional progress callback
 
     Returns:
-        List of DownloadResult objects
+        Tuple of (List[DownloadResult], stats_dict)
     """
-    downloader = AsyncDownloader(max_concurrent=max_concurrent)
-
-    # Save current event loop (if any) to restore later
-    old_loop = None
+    # Check if we're inside a running event loop (e.g., Jupyter)
     try:
-        old_loop = asyncio.get_event_loop()
-        if old_loop.is_running():
-            # We're inside an async context (e.g., Jupyter)
-            # Use the coroutine version instead
-            raise RuntimeError("Use download_files_async_coro() in async context")
-    except RuntimeError:
-        # No event loop exists - that's fine
-        pass
+        running_loop = asyncio.get_running_loop()
+        # If we get here, there's a running loop - can't use run_until_complete
+        raise RuntimeError(
+            "Cannot call download_files_async() from inside a running event loop. "
+            "Use 'await download_files_async_coro()' instead."
+        )
+    except RuntimeError as e:
+        # Check if the error is ours or "no running event loop"
+        if "download_files_async_coro" in str(e):
+            raise  # Re-raise our own error
+        # No running loop - that's fine, continue
+
+    downloader = AsyncDownloader(max_concurrent=max_concurrent)
 
     # Create new event loop for sync execution
     loop = asyncio.new_event_loop()
@@ -249,9 +254,7 @@ def download_files_async(
         return results, downloader.get_stats()
     finally:
         loop.close()
-        # Restore previous event loop if it existed
-        if old_loop is not None and not old_loop.is_closed():
-            asyncio.set_event_loop(old_loop)
+        asyncio.set_event_loop(None)  # Clean up
 
 
 # For running in existing event loop (e.g., Jupyter)
@@ -260,7 +263,7 @@ async def download_files_async_coro(
     temp_dir: str,
     max_concurrent: int = 10,
     progress_callback: Optional[Callable] = None
-) -> List[DownloadResult]:
+) -> Tuple[List[DownloadResult], Dict]:
     """Coroutine version for use in existing async context."""
     downloader = AsyncDownloader(max_concurrent=max_concurrent)
     results = await downloader.download_many(files, temp_dir, progress_callback)
