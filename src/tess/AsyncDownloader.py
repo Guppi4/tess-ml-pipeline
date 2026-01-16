@@ -26,6 +26,7 @@ class DownloadResult:
     error: Optional[str] = None
     size_bytes: int = 0
     duration_sec: float = 0.0
+    file_info: Optional[Dict[str, Any]] = None
 
 
 class AsyncDownloader:
@@ -230,8 +231,7 @@ def download_files_async(
     """
     # Check if we're inside a running event loop (e.g., Jupyter)
     try:
-        running_loop = asyncio.get_running_loop()
-        # If we get here, there's a running loop - can't use run_until_complete
+        asyncio.get_running_loop()
         raise RuntimeError(
             "Cannot call download_files_async() from inside a running event loop. "
             "Use 'await download_files_async_coro()' instead."
@@ -241,6 +241,13 @@ def download_files_async(
         if "download_files_async_coro" in str(e):
             raise  # Re-raise our own error
         # No running loop - that's fine, continue
+
+    # Save existing event loop (if any) to restore later
+    old_loop = None
+    try:
+        old_loop = asyncio.get_event_loop()
+    except RuntimeError:
+        pass  # No existing loop
 
     downloader = AsyncDownloader(max_concurrent=max_concurrent)
 
@@ -254,7 +261,11 @@ def download_files_async(
         return results, downloader.get_stats()
     finally:
         loop.close()
-        asyncio.set_event_loop(None)  # Clean up
+        # Restore old loop or clean up
+        if old_loop is not None:
+            asyncio.set_event_loop(old_loop)
+        else:
+            asyncio.set_event_loop(None)
 
 
 # For running in existing event loop (e.g., Jupyter)
