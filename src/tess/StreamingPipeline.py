@@ -42,9 +42,13 @@ import sys
 import shutil
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import threading
+import queue
 
 # Async downloader for high-performance parallel downloads
 try:
+    import aiohttp
+    import aiofiles
+    import asyncio
     from .AsyncDownloader import AsyncDownloader, download_files_async
     ASYNC_AVAILABLE = True
 except ImportError:
@@ -1092,6 +1096,264 @@ class StreamingProcessor:
 
         return self._finalize()
 
+    def run_pipeline(self, resume: bool = True, download_workers: int = 10,
+                     process_workers: int = 5, cadence_skip: int = 1,
+                     max_files: int = None) -> Dict:
+        """
+        Run pipeline with TRUE concurrent download and processing.
+
+        Producer-consumer pattern:
+        - Producer (async): downloads files → puts in queue
+        - Consumers (threads): take from queue → process → delete
+
+        This is faster than run_async because download and processing
+        happen simultaneously, not in separate phases.
+
+        Args:
+            resume: Resume from checkpoint if available
+            download_workers: Concurrent downloads (default 10)
+            process_workers: Parallel processing threads (default 5)
+            cadence_skip: Take every Nth file (default 1 = all)
+            max_files: Limit number of files (for testing)
+
+        Returns:
+            Summary dictionary
+        """
+        if not ASYNC_AVAILABLE:
+            print("  Warning: aiohttp not available, falling back to sync mode")
+            return self.run(resume=resume, workers=process_workers, cadence_skip=cadence_skip)
+
+        # Validate cadence_skip
+        if not isinstance(cadence_skip, int) or cadence_skip < 1:
+            raise ValueError(f"cadence_skip must be a positive integer, got {cadence_skip}")
+
+        # Try to resume
+        if resume:
+            self.load_checkpoint()
+
+        # Check if cadence_skip changed
+        if self._cadence_skip is not None and self._cadence_skip != cadence_skip:
+            print(f"\n  WARNING: cadence_skip changed from {self._cadence_skip} to {cadence_skip}")
+
+        self._cadence_skip = cadence_skip
+
+        # Get file list
+        print("\n  Fetching file list from MAST...", end="", flush=True)
+        files = self.get_sector_files()
+        print(" done!")
+
+        if not files:
+            print("  No files found!")
+            return {'error': 'No files found'}
+
+        # Apply cadence skip
+        original_count = len(files)
+        if cadence_skip > 1:
+            files = files[::cadence_skip]
+            effective_cadence = 200 * cadence_skip
+            print(f"  Cadence skip={cadence_skip}: {original_count} -> {len(files)} files (~{effective_cadence//60} min)")
+
+        # Add file indices (for epoch numbering)
+        for idx, f in enumerate(files):
+            f['file_idx'] = idx
+
+        # Filter already processed
+        remaining_files = [f for f in files if f['filename'] not in self.processed_files]
+
+        if max_files and len(remaining_files) > max_files:
+            remaining_files = remaining_files[:max_files]
+            print(f"  Limiting to first {max_files} files")
+
+        if not remaining_files:
+            print("  All files already processed!")
+            return self._create_summary()
+
+        # Progress display
+        display_total = len(remaining_files) + len(self.processed_files)
+        self.display = ProgressDisplay(
+            sector=self.sector,
+            camera=self.camera,
+            ccd=self.ccd,
+            total_files=display_total,
+            already_processed=len(self.processed_files)
+        )
+        self.display.show_header()
+        print(f"  PIPELINE MODE: {download_workers} downloaders, {process_workers} processors")
+        print(f"  (download and processing run simultaneously)\n")
+        self.display.start()
+
+        # Thread safety
+        self._results_lock = threading.Lock()
+        self._checkpoint_counter = 0
+
+        # Queue with backpressure (limit disk usage)
+        max_queue_size = process_workers * 2
+        file_queue = queue.Queue(maxsize=max_queue_size)
+
+        # Synchronization
+        producer_done = threading.Event()
+        shutdown_requested = threading.Event()
+        producer_error = [None]  # Mutable container for exception
+
+        try:
+            with tempfile.TemporaryDirectory() as temp_dir:
+                temp_path = Path(temp_dir)
+
+                # Build reference catalog FIRST (sequential, required)
+                if self.reference_stars is None and remaining_files:
+                    max_attempts = min(10, len(remaining_files))
+                    reference_built = False
+
+                    for attempt_idx in range(max_attempts):
+                        ref_file = remaining_files[0]
+                        remaining_files = remaining_files[1:]
+
+                        result = self.download_and_process_file(ref_file, temp_dir)
+                        self._handle_result(ref_file, result)
+
+                        if len(self.star_catalog) > 0:
+                            reference_built = True
+                            break
+
+                    if not reference_built:
+                        raise RuntimeError(
+                            f"Failed to build star catalog after {max_attempts} files."
+                        )
+
+                if not remaining_files:
+                    self.display.close()
+                    self.save_checkpoint()
+                    return self._finalize()
+
+                # --- Producer (async downloads) ---
+                async def producer():
+                    timeout = aiohttp.ClientTimeout(total=300)
+                    connector = aiohttp.TCPConnector(
+                        limit=download_workers * 2,
+                        limit_per_host=download_workers,
+                        ttl_dns_cache=300
+                    )
+
+                    async with aiohttp.ClientSession(
+                        connector=connector,
+                        timeout=timeout
+                    ) as session:
+                        semaphore = asyncio.Semaphore(download_workers)
+
+                        async def download_one(file_info: Dict):
+                            if shutdown_requested.is_set():
+                                return
+
+                            async with semaphore:
+                                url = file_info['url']
+                                filename = file_info['filename']
+                                filepath = temp_path / filename
+
+                                try:
+                                    async with session.get(url) as response:
+                                        response.raise_for_status()
+                                        async with aiofiles.open(filepath, 'wb') as f:
+                                            async for chunk in response.content.iter_chunked(1024 * 1024):
+                                                await f.write(chunk)
+
+                                    # Put in queue (blocks if full - backpressure)
+                                    loop = asyncio.get_running_loop()
+                                    await loop.run_in_executor(
+                                        None,
+                                        lambda: file_queue.put((file_info, filepath))
+                                    )
+
+                                except Exception as e:
+                                    with self._results_lock:
+                                        self.display.update(
+                                            success=False,
+                                            error=f"Download {filename}: {e}"
+                                        )
+
+                        # Download all files concurrently
+                        tasks = [download_one(f) for f in remaining_files]
+                        await asyncio.gather(*tasks, return_exceptions=True)
+
+                    producer_done.set()
+
+                def run_producer():
+                    try:
+                        asyncio.run(producer())
+                    except Exception as e:
+                        producer_error[0] = e
+                        producer_done.set()
+
+                # --- Consumer (process files) ---
+                def consumer():
+                    while True:
+                        try:
+                            item = file_queue.get(timeout=1.0)
+
+                            if item is None:  # Sentinel - stop
+                                break
+
+                            file_info, filepath = item
+
+                            try:
+                                result = self.process_fits_file(str(filepath), file_info)
+                                self._handle_result(file_info, result)
+                            except Exception as e:
+                                with self._results_lock:
+                                    self.display.update(success=False, error=str(e))
+                            finally:
+                                # Always delete temp file
+                                try:
+                                    if filepath.exists():
+                                        filepath.unlink()
+                                except:
+                                    pass
+
+                        except queue.Empty:
+                            if producer_done.is_set() and file_queue.empty():
+                                break
+                            continue
+
+                # Start producer thread
+                producer_thread = threading.Thread(target=run_producer, daemon=True)
+                producer_thread.start()
+
+                # Start consumer threads
+                with ThreadPoolExecutor(max_workers=process_workers) as executor:
+                    consumer_futures = [
+                        executor.submit(consumer)
+                        for _ in range(process_workers)
+                    ]
+
+                    # Wait for producer
+                    producer_thread.join()
+
+                    # Check for producer error
+                    if producer_error[0]:
+                        raise producer_error[0]
+
+                    # Send sentinels to stop consumers
+                    for _ in range(process_workers):
+                        file_queue.put(None)
+
+                    # Wait for consumers
+                    for f in consumer_futures:
+                        f.result()
+
+        except KeyboardInterrupt:
+            print("\n\n  Interrupted! Saving checkpoint...")
+            shutdown_requested.set()
+            producer_done.set()  # Signal producer to stop
+            self.save_checkpoint()
+            raise
+
+        # Close progress bar
+        self.display.close()
+
+        # Final save
+        self.save_checkpoint()
+
+        return self._finalize()
+
     def add_tic_ids(self) -> pd.DataFrame:
         """
         Add TIC IDs to stars using existing FFIStarFinder function.
@@ -1221,7 +1483,7 @@ def run_streaming_pipeline(sector: int, camera: str = "1", ccd: str = "1",
                           resume: bool = True, workers: int = 5,
                           add_tic: bool = False, async_mode: bool = True,
                           download_workers: int = 10, batch_size: int = 50,
-                          cadence_skip: int = 1) -> Dict:
+                          cadence_skip: int = 1, pipeline_mode: bool = True) -> Dict:
     """
     Convenience function to run streaming pipeline.
 
@@ -1232,18 +1494,29 @@ def run_streaming_pipeline(sector: int, camera: str = "1", ccd: str = "1",
         resume: Resume from checkpoint if available
         workers: Number of parallel processing workers (default 5)
         add_tic: If True, add TIC IDs after processing (slow, ~1 hour for 2000 stars)
-        async_mode: If True, use high-performance async downloading (5-10x faster)
-        download_workers: Concurrent downloads in async mode (default 10)
-        batch_size: Files per batch in async mode (default 50)
+        async_mode: If True, use async downloading (ignored if pipeline_mode=True)
+        download_workers: Concurrent downloads (default 10)
+        batch_size: Files per batch in async mode (default 50, ignored in pipeline mode)
         cadence_skip: Take every Nth file (default 1 = all files)
                      6 = 3/hour (~20 min), 9 = 2/hour (~30 min), 18 = 1/hour
+        pipeline_mode: If True (default), use producer-consumer pattern for maximum speed.
+                      Download and processing happen simultaneously.
 
     Returns:
         Summary dictionary
     """
     processor = StreamingProcessor(sector, camera, ccd)
 
-    if async_mode and ASYNC_AVAILABLE:
+    if pipeline_mode and ASYNC_AVAILABLE:
+        # New fast mode: download and process simultaneously
+        result = processor.run_pipeline(
+            resume=resume,
+            download_workers=download_workers,
+            process_workers=workers,
+            cadence_skip=cadence_skip
+        )
+    elif async_mode and ASYNC_AVAILABLE:
+        # Old async mode: download batch, then process batch
         result = processor.run_async(
             resume=resume,
             download_workers=download_workers,
@@ -1252,8 +1525,8 @@ def run_streaming_pipeline(sector: int, camera: str = "1", ccd: str = "1",
             cadence_skip=cadence_skip
         )
     else:
-        if async_mode and not ASYNC_AVAILABLE:
-            print("  Note: async mode requires 'pip install aiohttp aiofiles'")
+        if (async_mode or pipeline_mode) and not ASYNC_AVAILABLE:
+            print("  Note: async/pipeline mode requires 'pip install aiohttp aiofiles'")
             print("  Falling back to standard mode...\n")
         result = processor.run(resume=resume, workers=workers, cadence_skip=cadence_skip)
 
