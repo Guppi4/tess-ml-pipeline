@@ -1,16 +1,58 @@
 # TESS FFI Data Processing Pipeline
 
-A complete toolkit for extracting stellar photometry from NASA's TESS Full Frame Images, building lightcurves, finding variable stars, and preparing data for machine learning.
+> **Discover new variable stars using NASA satellite data — from your own computer.**
 
-## What is This For?
+A complete Python toolkit for processing TESS space telescope images, building stellar lightcurves, finding variable stars, and submitting discoveries to international databases.
 
-**TESS** (Transiting Exoplanet Survey Satellite) observes the sky in 27-day sectors, capturing **Full Frame Images (FFIs)** every 30 minutes (or 10 min in extended mission). Each FFI covers a 24° × 96° field containing thousands of stars.
+---
 
-This pipeline lets you:
-- Extract brightness measurements (photometry) for all detected stars
-- Track stars across hundreds of observations to build **lightcurves**
-- Find **variable stars** (eclipsing binaries, pulsators, transiting planets)
-- Export data for **machine learning** classification
+## What This Project Does
+
+```
+NASA TESS Satellite → Raw Images → This Pipeline → Variable Star Discoveries → VSX Database
+```
+
+**In simple terms:** NASA's TESS satellite takes pictures of the sky every 10 minutes. Each image contains thousands of stars. This pipeline:
+
+1. **Downloads** the images from NASA's archive (MAST)
+2. **Measures** the brightness of every star in each image
+3. **Tracks** how each star's brightness changes over ~27 days
+4. **Finds** stars with interesting brightness variations (variable stars)
+5. **Exports** data for machine learning or scientific publication
+
+### Real Results
+
+Using this pipeline, we've already discovered and submitted variable stars to the **AAVSO Variable Star Index (VSX)**:
+
+| Star | Type | Period | Status |
+|------|------|--------|--------|
+| TIC 610495795 | Eclipsing Binary (EA) | 4.29 days | ✅ VSX Submitted |
+| TIC 610538470 | Rotating Variable | 0.87 days | 📋 Ready for submission |
+
+---
+
+## Why This Pipeline?
+
+### Problem: TESS data is HUGE
+- One sector = ~10 GB of raw FITS files per CCD
+- 4 cameras × 4 CCDs = 16 possible combinations per sector
+- Full sky coverage = 100+ sectors
+
+### Solution: Streaming Processing
+This pipeline processes data **on-the-fly**:
+- Downloads one image → extracts star brightness → deletes image → repeats
+- Final output: ~100 MB (not 10 GB!)
+- Works on any laptop with 8GB RAM
+
+---
+
+## What is TESS?
+
+**TESS** (Transiting Exoplanet Survey Satellite) is a NASA space telescope launched in 2018. It observes the sky in 27-day "sectors", taking **Full Frame Images (FFIs)** every 200 seconds. Each image covers 24° × 96° and contains 10,000+ stars.
+
+TESS data is **free and public** — anyone can download it from [MAST Archive](https://archive.stsci.edu/tess/).
+
+---
 
 ## Quick Start (5 minutes)
 
@@ -289,11 +331,24 @@ Raw CCD Image:              Aperture Extraction:
 
 ### What Can You Find?
 
-- **Eclipsing binaries**: Periodic dips when one star blocks another
-- **Pulsating stars**: Regular brightness oscillations (Cepheids, RR Lyrae, δ Scuti)
-- **Exoplanet transits**: Tiny dips when a planet crosses its star
-- **Stellar flares**: Sudden brightness increases (especially M dwarfs)
-- **Rotational modulation**: Starspots causing periodic variations
+```
+Eclipsing Binary (EA):          Pulsating Star (DSCT):         Rotating Variable (ROT):
+     ▲                               ▲                               ▲
+Flux │    ╭──╮    ╭──╮         Flux │ ∧ ∧ ∧ ∧ ∧ ∧               Flux │╭─╮  ╭─╮  ╭─╮
+     │────╯  ╰────╯  ╰──       │∨ ∨ ∨ ∨ ∨ ∨ ∨                    │╯  ╰──╯  ╰──╯
+     └──────────────────►           └──────────────────►              └──────────────────►
+              Time                         Time                              Time
+     Deep dips = eclipse            Fast oscillations               Slow wave = starspots
+```
+
+| Type | What it is | Period | Example |
+|------|------------|--------|---------|
+| **EA** (Algol) | Two stars orbiting, one blocks the other | Hours to days | TIC 610495795 |
+| **EB** (β Lyrae) | Close binary with continuous variation | Hours to days | — |
+| **DSCT** (δ Scuti) | Star pulsating in/out | Minutes to hours | — |
+| **ROT** | Starspots rotating into/out of view | Hours to weeks | TIC 610538470 |
+| **Flare** | Sudden magnetic explosion on star surface | Minutes | — |
+| **Transit** | Planet passing in front of star | Hours | — |
 
 ## Configuration
 

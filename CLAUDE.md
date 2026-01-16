@@ -39,6 +39,7 @@ src/tess/
 ├── cli.py                 # Command-line interface (tess-ffi)
 ├── config.py              # Central configuration
 ├── StreamingPipeline.py   # Main processor (download + photometry)
+├── CVZPipeline.py         # DEPRECATED - use StreamingPipeline for CVZ
 ├── FFIDownloader.py       # Download-only (legacy path)
 ├── FFICalibrate.py        # Background calibration (legacy path)
 ├── FFIStarFinder.py       # Star detection utilities

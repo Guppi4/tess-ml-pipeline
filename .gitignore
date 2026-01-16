@@ -67,3 +67,4 @@ config.local.py
 
 # Session state (personal working file)
 state.md
+tmpclaude-*

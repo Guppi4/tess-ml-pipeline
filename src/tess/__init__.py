@@ -19,5 +19,7 @@ __all__ = [
     "FFIDownloader",
     "FFICalibrate",
     "FFIStarFinder",
+    "combine_sectors",
     "config",
+    # CVZPipeline - deprecated, use StreamingPipeline for CVZ instead
 ]
