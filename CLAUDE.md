@@ -311,25 +311,21 @@ export_for_ml(collection, name="sector70", min_completeness=0.6)
 
 | Notebook | Purpose |
 |----------|---------|
-| `notebooks/ml_variable_stars.ipynb` | ML analysis: anomaly detection, clustering, t-SNE/UMAP, classification baseline |
+| `notebooks/ml_variable_stars.ipynb` | Unsupervised ML: anomaly detection, clustering, t-SNE/UMAP |
 | `notebooks/anomaly_detection.ipynb` | Periodogram analysis, BLS transit search (sector 70) |
 | `notebooks/eda_tess.ipynb` | Exploratory data analysis |
 
 ### ml_variable_stars.ipynb
 
-Main ML notebook for sector 61 data. Sections:
+Main ML notebook for sector 61 data (unsupervised analysis):
 1. Data Loading — loads `ml/ml_classification.parquet`
 2. Feature Engineering — RobustScaler, correlation analysis
 3. Anomaly Detection — Isolation Forest, LOF, Mahalanobis (consensus voting)
 4. Clustering — K-Means (elbow/silhouette), DBSCAN
 5. Dimensionality Reduction — t-SNE, UMAP visualization
-6. Classification Baseline — pseudo-labels, Random Forest, XGBoost
-7. Feature Importance — RF importance, SHAP values
-8. Results Summary — statistics, top anomalies table
-9. Anomaly Viewer — lightcurves for top-N anomalies
-10. Export — ml_results.csv, trained models
-
-**Note:** Classification uses pseudo-labels derived from features (not real labels). For real classification, cross-match with VSX or add manual labels.
+6. Results Summary — statistics, top anomalies table
+7. Anomaly Viewer — lightcurves for top-N anomalies
+8. Export — ml_results.csv
 
 ## Important Notes
 
