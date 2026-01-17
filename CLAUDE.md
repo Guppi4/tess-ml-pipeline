@@ -312,7 +312,7 @@ export_for_ml(collection, name="sector70", min_completeness=0.6)
 | Notebook | Purpose |
 |----------|---------|
 | `notebooks/ml_variable_stars.ipynb` | Unsupervised ML: anomaly detection, clustering, t-SNE/UMAP |
-| `notebooks/anomaly_detection.ipynb` | Periodogram analysis, BLS transit search (sector 70) |
+| `notebooks/periodicity_analysis.ipynb` | Lomb-Scargle periodograms, BLS transit search (uses cleaned data) |
 | `notebooks/eda_tess.ipynb` | Exploratory data analysis |
 
 ### ml_variable_stars.ipynb
