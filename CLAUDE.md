@@ -39,6 +39,7 @@ src/tess/
 ├── cli.py                 # Command-line interface (tess-ffi)
 ├── config.py              # Central configuration
 ├── StreamingPipeline.py   # Main processor (download + photometry)
+├── DataCleaner.py         # Data cleaning with masks (NEW)
 ├── CVZPipeline.py         # DEPRECATED - use StreamingPipeline for CVZ
 ├── FFIDownloader.py       # Download-only (legacy path)
 ├── FFICalibrate.py        # Background calibration (legacy path)
@@ -63,7 +64,17 @@ MAST Archive
 │  (supports cadence_skip for faster processing)         │
 └────────────────────────────────────────────────────────┘
      │
-     ▼  data/tess/sector_XXX/camY_ccdZ/*.csv
+     ▼  data/tess/sector_XXX/camY_ccdZ/photometry.parquet
+     │
+┌────────────────────────────────────────────────────────┐
+│              DataCleaner.py (NEW)                       │
+│  • epoch_qc: bad epoch detection                       │
+│  • star_qc: per-star quality metrics                   │
+│  • Common-mode correction (flux_cm)                    │
+│  • Mask-based cleaning (preserves all data)            │
+└────────────────────────────────────────────────────────┘
+     │
+     ▼  cleaned/photometry_with_masks.parquet
      │
 ┌────────────────────────────────────────────────────────┐
 │              LightcurveBuilder.py                       │
@@ -79,6 +90,8 @@ MAST Archive
 │ • TIC enrichment  │ │ • timeseries.npz│
 │ • Ranking         │ │                 │
 └─────────────────┘    └─────────────────┘
+     │
+     ▼  variable_stars/sector_XXX/
 ```
 
 ## CLI Commands
@@ -135,13 +148,43 @@ Builds time series for each star and calculates variability metrics.
 - `stetson_j` - Correlated variability index
 - `outlier_fraction` - Fraction of 3σ outliers
 
+### DataCleaner.py
+Comprehensive data cleaning with mask-based approach (preserves all data).
+
+**Key features:**
+- `compute_epoch_qc()` - Detect bad epochs (high scatter, low completeness)
+- `compute_star_qc()` - Per-star quality metrics (completeness, MAD, edge flags)
+- `find_quiet_stars()` - Find stable stars for common-mode calculation
+- `compute_common_mode()` - Calculate systematic trends from quiet stars
+- `create_masks()` - Apply all quality filters as bit masks
+- `export_for_ml()` - Export cleaned data for ML (anomaly/classification modes)
+
+**Mask bits (uint16):**
+| Bit | Name | Description |
+|-----|------|-------------|
+| 0 | quality | TESS quality flag |
+| 1 | invalid | NaN/negative flux |
+| 2 | bad_epoch | High scatter epoch |
+| 3 | outlier_pos | Positive outlier (5σ) |
+| 4 | outlier_neg | Negative outlier (10σ) |
+| 5 | edge | Star near CCD edge |
+| 6 | artifact | Known artifact window |
+| 7 | low_snr | Low signal-to-noise |
+
+**Usage:**
+```python
+from tess.DataCleaner import clean_sector
+clean_sector(61, '4', '2')  # Creates qc/, cleaned/, ml/ folders
+```
+
 ### VariableStarFinder.py
-Finds and ranks variable stars using multiple metrics.
+Finds and ranks variable stars using multiple metrics. Saves results to `variable_stars/sector_XXX/`.
 
 **Key functions:**
 - `load_and_build_lightcurves(min_snr=5.0)` - Load and filter data
 - `calculate_periodicity()` - Lomb-Scargle periodogram
 - `get_variable_candidates(min_amplitude=0.01)` - Get ranked candidates
+- `cross_match_vsx()` - Check against AAVSO Variable Star Index
 
 ### MLExport.py
 Extracts features for machine learning classification.
@@ -179,19 +222,32 @@ data/
 ├── tess/
 │   └── sector_XXX/
 │       └── camY_ccdZ/
-│           ├── sXXX_Y-Z_photometry.csv      # Main photometry output
-│           └── sXXX_Y-Z_photometry_checkpoint.csv
+│           ├── sXXX_Y-Z_photometry.parquet   # Raw photometry
+│           ├── sXXX_Y-Z_catalog.json         # Star catalog with TIC IDs
+│           ├── qc/                           # Quality control (DataCleaner)
+│           │   ├── epoch_qc.parquet
+│           │   ├── star_qc.parquet
+│           │   └── bad_epochs.json
+│           ├── cleaned/                      # Cleaned data
+│           │   └── photometry_with_masks.parquet
+│           └── ml/                           # ML exports
+│               ├── ml_anomaly.parquet
+│               └── ml_classification.parquet
 ├── exports/
 │   ├── features/       # ML features (CSV, NPY)
-│   ├── timeseries/     # Padded sequences (NPZ)
-│   └── vsx_submissions/ # VSX submission data
-variable_stars/                    # Variable star analysis (in .gitignore)
-├── _overview/                     # Overview plots (sorted first)
-└── TIC_XXXXXXXXX/                 # Per-star folders
-    ├── VSX_*.png                  # Files for VSX submission (prefix)
-    └── *.png                      # Working analysis files
-lightcurves/            # Saved plots
-photometry_results/     # Converted StarCatalog format
+│   └── timeseries/     # Padded sequences (NPZ)
+
+variable_stars/                    # Variable star analysis (per sector)
+├── sector_061/
+│   ├── plots/                     # Overview plots (top 20)
+│   ├── sXXX_Y-Z_variable_candidates.csv
+│   ├── sXXX_Y-Z_all_stars.csv
+│   └── TIC_XXXXXXXXX/             # Per-star detailed analysis
+│       ├── VSX_rawlc.png          # For VSX submission
+│       ├── VSX_phase.png
+│       └── period_check_2x.png
+└── sector_070/
+    └── ...
 ```
 
 **Note:** Legacy `streaming_results/` directory is still supported for backwards compatibility.
@@ -209,12 +265,34 @@ run_streaming_pipeline(sector=70, camera="1", ccd="1", workers=5)
 run_streaming_pipeline(sector=70, camera="1", ccd="1", workers=10, cadence_skip=6)
 ```
 
+### Clean data (after processing)
+```python
+from tess.DataCleaner import clean_sector
+
+# Run full cleaning pipeline: epoch_qc, star_qc, common-mode, masks, ML export
+clean_sector(61, '4', '2')
+
+# Or step by step:
+from tess.DataCleaner import DataCleaner
+cleaner = DataCleaner(61, '4', '2')
+cleaner.load_data()
+cleaner.compute_epoch_qc()
+cleaner.compute_star_qc()
+cleaner.find_quiet_stars()
+cleaner.compute_common_mode()
+cleaner.create_masks()
+cleaner.export_for_ml(mode='classification')
+```
+
 ### Find variable stars
 ```python
 from tess.VariableStarFinder import VariableStarFinder
-finder = VariableStarFinder(sector=70)
+finder = VariableStarFinder(sector=61, camera='4', ccd='2')
 finder.load_and_build_lightcurves(min_snr=5.0)
 finder.calculate_periodicity()
+finder.calculate_variability_scores()
+finder.save_results()  # Saves to variable_stars/sector_061/
+finder.plot_top_candidates(n_plots=20)
 candidates = finder.get_variable_candidates(min_amplitude=0.01)
 ```
 
@@ -228,6 +306,30 @@ catalog = convert_to_starcatalog(70, "1", "1")
 collection = LightcurveCollection(catalog)
 export_for_ml(collection, name="sector70", min_completeness=0.6)
 ```
+
+## Notebooks
+
+| Notebook | Purpose |
+|----------|---------|
+| `notebooks/ml_variable_stars.ipynb` | ML analysis: anomaly detection, clustering, t-SNE/UMAP, classification baseline |
+| `notebooks/anomaly_detection.ipynb` | Periodogram analysis, BLS transit search (sector 70) |
+| `notebooks/eda_tess.ipynb` | Exploratory data analysis |
+
+### ml_variable_stars.ipynb
+
+Main ML notebook for sector 61 data. Sections:
+1. Data Loading — loads `ml/ml_classification.parquet`
+2. Feature Engineering — RobustScaler, correlation analysis
+3. Anomaly Detection — Isolation Forest, LOF, Mahalanobis (consensus voting)
+4. Clustering — K-Means (elbow/silhouette), DBSCAN
+5. Dimensionality Reduction — t-SNE, UMAP visualization
+6. Classification Baseline — pseudo-labels, Random Forest, XGBoost
+7. Feature Importance — RF importance, SHAP values
+8. Results Summary — statistics, top anomalies table
+9. Anomaly Viewer — lightcurves for top-N anomalies
+10. Export — ml_results.csv, trained models
+
+**Note:** Classification uses pseudo-labels derived from features (not real labels). For real classification, cross-match with VSX or add manual labels.
 
 ## Important Notes
 

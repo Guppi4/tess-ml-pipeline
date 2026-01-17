@@ -307,6 +307,36 @@ candidates = finder.get_variable_candidates(min_amplitude=0.01)
 export_for_ml(collection, name="sector70", min_completeness=0.6)
 ```
 
+## Data Cleaning & ML Pipeline
+
+After processing, use `DataCleaner` for quality control and ML feature extraction:
+
+```python
+from tess.DataCleaner import clean_sector
+
+# Full cleaning pipeline: QC, common-mode correction, masks, ML export
+clean_sector(61, '4', '2')
+```
+
+This creates:
+- `qc/` — epoch and star quality metrics
+- `cleaned/` — photometry with mask bits and common-mode correction
+- `ml/` — ML-ready features (classification and anomaly detection modes)
+
+### ML Notebook
+
+Use `notebooks/ml_variable_stars.ipynb` for unsupervised analysis:
+
+- **Anomaly Detection** — Isolation Forest, LOF, Mahalanobis
+- **Clustering** — K-Means, DBSCAN
+- **Visualization** — t-SNE, UMAP
+- **Classification Baseline** — Random Forest, XGBoost
+
+```bash
+# Install ML dependencies
+pip install -e ".[ml]"
+```
+
 ## Science Background
 
 ### How Aperture Photometry Works

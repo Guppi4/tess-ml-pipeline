@@ -41,6 +41,13 @@ dependencies = [
 
 [project.optional-dependencies]
 gui = ["PyQt5>=5.15.0"]
+ml = [
+    "scikit-learn>=1.0.0",
+    "umap-learn>=0.5.0",
+    "xgboost>=1.6.0",
+    "shap>=0.41.0",
+    "seaborn>=0.12.0",
+]
 dev = [
     "pytest>=7.0.0",
     "pytest-cov>=4.0.0",

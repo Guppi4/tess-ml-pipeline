@@ -51,7 +51,7 @@ manifests/
 
 # Jupyter
 .ipynb_checkpoints/
-*.ipynb
+# Note: notebooks ARE tracked (removed *.ipynb from ignore)
 
 # OS
 .DS_Store

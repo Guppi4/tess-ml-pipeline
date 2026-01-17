@@ -655,20 +655,26 @@ class StreamingProcessor:
             ra, dec = star_info['ra'], star_info['dec']
 
             # Convert RA/Dec to pixel coordinates for this epoch
+            use_ref_coords = False
             if wcs and ra is not None and dec is not None:
                 try:
                     pixel_coords = wcs.all_world2pix([[ra, dec]], 0)
                     x, y = pixel_coords[0]
-                    # Check for NaN (WCS can return NaN without exception)
+                    # Check for NaN or out-of-bounds (WCS can give bad coords)
                     if np.isnan(x) or np.isnan(y):
-                        x, y = star_info['ref_x'], star_info['ref_y']
+                        use_ref_coords = True
+                    elif x < 0 or y < 0 or x >= data.shape[1] or y >= data.shape[0]:
+                        # WCS gave out-of-bounds coords, try ref coords
+                        use_ref_coords = True
                 except:
-                    # Fall back to reference position
-                    x, y = star_info['ref_x'], star_info['ref_y']
+                    use_ref_coords = True
             else:
+                use_ref_coords = True
+
+            if use_ref_coords:
                 x, y = star_info['ref_x'], star_info['ref_y']
 
-            # Check bounds
+            # Check bounds (after potential fallback to ref coords)
             if x < 0 or y < 0 or x >= data.shape[1] or y >= data.shape[0]:
                 record = {
                     'star_id': star_id,

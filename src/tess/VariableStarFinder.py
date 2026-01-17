@@ -29,10 +29,19 @@ VSX_SEARCH_RADIUS = 10.0
 VARIABLE_STARS_DIR = BASE_DIR / "variable_stars"
 
 
-def ensure_variable_dirs():
-    """Create output directories."""
+def ensure_variable_dirs(sector: int = None):
+    """Create output directories.
+
+    Args:
+        sector: If provided, creates sector-specific subdirectory
+    """
     VARIABLE_STARS_DIR.mkdir(parents=True, exist_ok=True)
-    (VARIABLE_STARS_DIR / "plots").mkdir(exist_ok=True)
+    if sector is not None:
+        sector_dir = VARIABLE_STARS_DIR / f"sector_{sector:03d}"
+        sector_dir.mkdir(exist_ok=True)
+        (sector_dir / "plots").mkdir(exist_ok=True)
+        return sector_dir
+    return VARIABLE_STARS_DIR
 
 
 class VariableStarFinder:
@@ -462,7 +471,7 @@ class VariableStarFinder:
         Save variable star candidates to CSV.
 
         Args:
-            output_dir: Output directory (default: variable_stars/)
+            output_dir: Output directory (default: variable_stars/sector_XXX/)
 
         Returns:
             Tuple of (full_table_path, top_candidates_path)
@@ -470,10 +479,9 @@ class VariableStarFinder:
         if self.variability_df is None:
             raise ValueError("No scores calculated. Call calculate_variability_scores() first.")
 
-        ensure_variable_dirs()
-
         if output_dir is None:
-            output_dir = VARIABLE_STARS_DIR
+            # Use sector-based directory by default
+            output_dir = ensure_variable_dirs(self.sector)
         else:
             output_dir = Path(output_dir)
             output_dir.mkdir(parents=True, exist_ok=True)
@@ -538,10 +546,10 @@ class VariableStarFinder:
         if self.variability_df is None:
             raise ValueError("No scores calculated. Call calculate_variability_scores() first.")
 
-        ensure_variable_dirs()
-
         if output_dir is None:
-            output_dir = VARIABLE_STARS_DIR / "plots"
+            # Use sector-based directory by default
+            sector_dir = ensure_variable_dirs(self.sector)
+            output_dir = sector_dir / "plots"
         else:
             output_dir = Path(output_dir)
             output_dir.mkdir(parents=True, exist_ok=True)
