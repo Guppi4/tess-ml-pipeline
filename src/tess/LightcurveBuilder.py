@@ -668,3 +668,94 @@ def build_lightcurves(catalog: StarCatalog = None,
         config.MIN_EPOCHS_FOR_STAR = old_val
 
     return collection
+
+
+def lightcurve_from_cleaned(star_id: str, cleaned_df: pd.DataFrame,
+                            use_flux_cm: bool = True,
+                            for_transit: bool = False) -> Lightcurve:
+    """
+    Create Lightcurve from cleaned photometry data (from DataCleaner).
+
+    Args:
+        star_id: Star identifier
+        cleaned_df: Full cleaned photometry DataFrame (all stars)
+        use_flux_cm: Use common-mode corrected flux (default True)
+        for_transit: If True, keep outliers (bits 3,4) for transit search
+
+    Returns:
+        Lightcurve object
+    """
+    # Filter to this star
+    star_df = cleaned_df[cleaned_df['star_id'] == star_id].copy()
+
+    if len(star_df) == 0:
+        raise ValueError(f"Star {star_id} not found in cleaned data")
+
+    # Select flux column
+    flux_col = 'flux_cm' if (use_flux_cm and 'flux_cm' in star_df.columns) else 'flux'
+
+    # Convert mask to quality_flag
+    if 'mask' in star_df.columns:
+        if for_transit:
+            # For transit: only exclude bad quality/epochs (bits 0,1,2)
+            # Keep outliers (bits 3,4) as they might be transits
+            star_df['quality_flag'] = ((star_df['mask'] & 0b111) != 0).astype(int)
+        else:
+            # Normal: any mask bit = bad
+            star_df['quality_flag'] = (star_df['mask'] != 0).astype(int)
+    elif 'quality' in star_df.columns:
+        star_df['quality_flag'] = star_df['quality']
+    else:
+        star_df['quality_flag'] = 0
+
+    # Rename flux column if needed
+    if flux_col != 'flux':
+        star_df = star_df.rename(columns={flux_col: 'flux'})
+
+    # Ensure required columns
+    required = ['btjd', 'flux', 'quality_flag']
+    if 'flux_error' not in star_df.columns:
+        # Estimate error from MAD if not available
+        good_flux = star_df[star_df['quality_flag'] == 0]['flux']
+        if len(good_flux) > 10:
+            mad = np.median(np.abs(good_flux - np.median(good_flux))) * 1.4826
+            star_df['flux_error'] = mad
+        else:
+            star_df['flux_error'] = 0.01 * star_df['flux'].median()
+
+    return Lightcurve(star_id, star_df[required + ['flux_error']])
+
+
+def load_cleaned_lightcurves(sector: int, camera: str, ccd: str,
+                             use_flux_cm: bool = True) -> dict:
+    """
+    Load all lightcurves from cleaned photometry.
+
+    Args:
+        sector: Sector number
+        camera: Camera (1-4)
+        ccd: CCD (1-4)
+        use_flux_cm: Use common-mode corrected flux
+
+    Returns:
+        Dict of {star_id: Lightcurve}
+    """
+    from .config import DATA_DIR
+
+    cleaned_path = DATA_DIR / f"tess/sector_{sector:03d}/cam{camera}_ccd{ccd}/cleaned/photometry_with_masks.parquet"
+
+    if not cleaned_path.exists():
+        raise FileNotFoundError(f"Cleaned data not found: {cleaned_path}")
+
+    cleaned_df = pd.read_parquet(cleaned_path)
+    star_ids = cleaned_df['star_id'].unique()
+
+    lightcurves = {}
+    for star_id in star_ids:
+        try:
+            lightcurves[star_id] = lightcurve_from_cleaned(star_id, cleaned_df, use_flux_cm)
+        except Exception as e:
+            print(f"Warning: Could not create lightcurve for {star_id}: {e}")
+
+    print(f"Loaded {len(lightcurves)} lightcurves from cleaned data")
+    return lightcurves
