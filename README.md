@@ -408,6 +408,13 @@ Key parameters in `src/tess/config.py`:
 - DAOStarFinder: Stetson (1987), PASP 99, 191
 - TIC Catalog: Stassun et al. (2019), AJ 158, 138
 
+
+
+https://github.com/user-attachments/assets/2c192c16-703e-4c6d-a324-242808f20dda
+
+
+
+
 ## License
 
 MIT License
