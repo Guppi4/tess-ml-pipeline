@@ -54,8 +54,15 @@ try:
 except ImportError:
     ASYNC_AVAILABLE = False
 
+# Rich dashboard (falls back to plain tqdm display if not installed)
+try:
+    from .RichProgress import RichProgressDisplay as _RichProgressDisplay
+    RICH_AVAILABLE = True
+except ImportError:
+    RICH_AVAILABLE = False
 
-class ProgressDisplay:
+
+class _PlainProgressDisplay:
     """
     Clean progress display for streaming pipeline.
     Shows parameters, live stats, and final summary.
@@ -109,7 +116,7 @@ class ProgressDisplay:
             bar_format='{l_bar}{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}, {rate_fmt}]'
         )
 
-    def update(self, success: bool, stars: int = 0, measurements: int = 0, error: str = None):
+    def update(self, success: bool, stars: int = 0, measurements: int = 0, error: str = None, **kwargs):
         """Update stats after processing a file (thread-safe)."""
         with self._lock:
             self.processed += 1
@@ -194,6 +201,10 @@ class ProgressDisplay:
             print(f"  ⚠ {len(self.errors)} files had errors (see log for details)")
 
 
+# Choose display class: Rich dashboard if available, plain tqdm fallback otherwise
+ProgressDisplay = _RichProgressDisplay if RICH_AVAILABLE else _PlainProgressDisplay
+
+
 from .config import (
     BASE_DIR, PHOTOMETRY_RESULTS_DIR, MANIFEST_DIR,
     MAST_FFI_BASE_URL, DAOFIND_FWHM, DAOFIND_THRESHOLD_SIGMA,
@@ -252,6 +263,15 @@ class StreamingProcessor:
         # Cadence skip (saved in checkpoint for consistency)
         self._cadence_skip = None
 
+        # WCS telemetry (for monitoring batch-vs-fallback behavior).
+        self.wcs_batch_attempt_epochs = 0
+        self.wcs_batch_failed_epochs = 0
+        self.wcs_batch_fail_fallback_star_attempts = 0
+        self.wcs_batch_fail_fallback_star_success = 0
+        self.wcs_eligible_stars = 0
+        self.wcs_eligible_ref_fallback_stars = 0
+        self._telemetry_lock = threading.Lock()
+
         # Checkpoint path (new location)
         self.checkpoint_path = self.output_dir / "checkpoints" / f"{self.session_id}_checkpoint.json"
         # Legacy checkpoint path for loading old data
@@ -283,6 +303,12 @@ class StreamingProcessor:
                 self.star_catalog = data.get('star_catalog', {})
                 self.reference_epoch_idx = data.get('reference_epoch_idx')
                 self._cadence_skip = data.get('cadence_skip')  # May be None for old checkpoints
+                self.wcs_batch_attempt_epochs = int(data.get('wcs_batch_attempt_epochs', 0))
+                self.wcs_batch_failed_epochs = int(data.get('wcs_batch_failed_epochs', 0))
+                self.wcs_batch_fail_fallback_star_attempts = int(data.get('wcs_batch_fail_fallback_star_attempts', 0))
+                self.wcs_batch_fail_fallback_star_success = int(data.get('wcs_batch_fail_fallback_star_success', 0))
+                self.wcs_eligible_stars = int(data.get('wcs_eligible_stars', 0))
+                self.wcs_eligible_ref_fallback_stars = int(data.get('wcs_eligible_ref_fallback_stars', 0))
 
                 # Load photometry from CSV (fallback to parquet for old checkpoints)
                 csv_path = data_dir / f"{self.session_id}_photometry_checkpoint.csv"
@@ -320,6 +346,12 @@ class StreamingProcessor:
             'star_catalog': self.star_catalog,
             'reference_epoch_idx': self.reference_epoch_idx,
             'cadence_skip': self._cadence_skip,
+            'wcs_batch_attempt_epochs': self.wcs_batch_attempt_epochs,
+            'wcs_batch_failed_epochs': self.wcs_batch_failed_epochs,
+            'wcs_batch_fail_fallback_star_attempts': self.wcs_batch_fail_fallback_star_attempts,
+            'wcs_batch_fail_fallback_star_success': self.wcs_batch_fail_fallback_star_success,
+            'wcs_eligible_stars': self.wcs_eligible_stars,
+            'wcs_eligible_ref_fallback_stars': self.wcs_eligible_ref_fallback_stars,
             'last_update': datetime.now().isoformat()
         }
 
@@ -532,6 +564,31 @@ class StreamingProcessor:
 
     def _detect_and_measure(self, data, median, std, gain, metadata, wcs, epoch_idx):
         """Detect stars in first epoch and build reference catalog."""
+        def centroid_com(x0: float, y0: float, *, half_size: int = 4) -> tuple[float, float]:
+            """Simple center-of-mass centroid around (x0,y0) for diagnostics (does not recenter photometry)."""
+            try:
+                ny, nx = data.shape
+                cx = int(round(float(x0)))
+                cy = int(round(float(y0)))
+                x1 = max(0, cx - int(half_size))
+                x2 = min(nx, cx + int(half_size) + 1)
+                y1 = max(0, cy - int(half_size))
+                y2 = min(ny, cy + int(half_size) + 1)
+                sub = data[y1:y2, x1:x2]
+                if sub.size == 0:
+                    return float(x0), float(y0)
+                w = sub - float(np.nanmedian(sub))
+                w = np.clip(w, 0.0, None)
+                s = float(np.nansum(w))
+                if not np.isfinite(s) or s <= 0:
+                    return float(x0), float(y0)
+                yy, xx = np.indices(sub.shape)
+                xc = float((xx * w).sum() / s) + float(x1)
+                yc = float((yy * w).sum() / s) + float(y1)
+                return xc, yc
+            except Exception:
+                return float(x0), float(y0)
+
         # Detect stars
         daofind = DAOStarFinder(
             fwhm=DAOFIND_FWHM,
@@ -563,7 +620,10 @@ class StreamingProcessor:
             if tess_point_available:
                 try:
                     ra_val, dec_val, _ = tess_stars2px_reverse_function_entry(
-                        self.sector, int(self.camera), int(self.ccd), float(x), float(y)
+                        # tess-point expects FITS-style (1-indexed) pixel coordinates for the full-frame
+                        # image. photutils/DAOStarFinder returns numpy-style (0-indexed) centroids.
+                        # Without +1 in both axes, positions are shifted by ~1 px → ~sqrt(2)*21" ≈ 30".
+                        self.sector, int(self.camera), int(self.ccd), float(x) + 1.0, float(y) + 1.0
                     )
                     if 0 <= ra_val <= 360 and -90 <= dec_val <= 90:
                         ra, dec = float(ra_val), float(dec_val)
@@ -617,16 +677,37 @@ class StreamingProcessor:
             elif min(x, y, data.shape[1] - x, data.shape[0] - y) < DEFAULT_APERTURE_RADIUS * 2:
                 quality = 1
 
+            # Multi-aperture photometry (diagnostic against blending / aperture dependence)
+            extra = {}
+            aperture_radii = sorted({2.0, float(DEFAULT_APERTURE_RADIUS), 4.0})
+            for r in aperture_radii:
+                ap = CircularAperture([(x, y)], r=float(r))
+                ph = aperture_photometry(data, ap)
+                n_pix = np.pi * float(r) ** 2
+                ap_sum = ph['aperture_sum'][0] - (local_bkg_per_pixel * n_pix)
+                f = float(ap_sum) / float(exposure_time)
+                ferr_counts = np.sqrt(
+                    abs(ap_sum) / gain +
+                    n_pix * local_bkg_per_pixel / gain +
+                    n_pix * (std / gain) ** 2
+                )
+                ferr = float(ferr_counts) / float(exposure_time)
+                key = f"r{int(round(r))}"
+                extra[f"flux_{key}"] = float(f)
+                extra[f"flux_error_{key}"] = float(ferr)
+
             # Add to catalog
             self.star_catalog[star_id] = {
                 'star_id': star_id,
                 'ra': ra,
                 'dec': dec,
                 'ref_x': x,
-                'ref_y': y
+                'ref_y': y,
+                'ref_flux': float(flux),
             }
 
             # Add photometry record
+            x_cent, y_cent = centroid_com(float(x), float(y))
             record = {
                 'star_id': star_id,
                 'epoch': epoch_idx,
@@ -635,9 +716,54 @@ class StreamingProcessor:
                 'flux_error': float(flux_error),
                 'quality': int(quality),
                 'x': float(x),
-                'y': float(y)
+                'y': float(y),
+                'x_centroid': float(x_cent),
+                'y_centroid': float(y_cent),
+                'dx_ref': float(x_cent - float(x)),
+                'dy_ref': float(y_cent - float(y)),
             }
+            record.update(extra)
             photometry_records.append(record)
+
+        # Simple contamination proxies from the reference frame (no external catalogs needed).
+        try:
+            ids = list(self.star_catalog.keys())
+            xs = np.asarray([float(self.star_catalog[s]['ref_x']) for s in ids], dtype=float)
+            ys = np.asarray([float(self.star_catalog[s]['ref_y']) for s in ids], dtype=float)
+            f0 = np.asarray([float(self.star_catalog[s].get('ref_flux', np.nan)) for s in ids], dtype=float)
+
+            for idx, sid in enumerate(ids):
+                dx = xs - xs[idx]
+                dy = ys - ys[idx]
+                d = np.hypot(dx, dy)
+                m_other = d > 0
+                if int(m_other.sum()) == 0:
+                    continue
+
+                # Nearest neighbor
+                nn = int(np.argmin(d[m_other]))
+                nn_idx = np.flatnonzero(m_other)[nn]
+                nn_dist_px = float(d[nn_idx])
+                nn_dist_arcsec = nn_dist_px * 21.0
+
+                ref_flux = float(f0[idx]) if np.isfinite(f0[idx]) else float("nan")
+                nn_flux = float(f0[nn_idx]) if np.isfinite(f0[nn_idx]) else float("nan")
+                nn_flux_ratio = (nn_flux / ref_flux) if (np.isfinite(nn_flux) and np.isfinite(ref_flux) and ref_flux > 0) else None
+
+                # Contamination inside typical aperture influence radii
+                contam4 = (d <= 4.0) & m_other
+                contam6 = (d <= 6.0) & m_other
+                sum4 = float(np.nansum(f0[contam4]))
+                sum6 = float(np.nansum(f0[contam6]))
+                contam_ratio_84 = (sum4 / ref_flux) if (np.isfinite(ref_flux) and ref_flux > 0) else None
+                contam_ratio_126 = (sum6 / ref_flux) if (np.isfinite(ref_flux) and ref_flux > 0) else None
+
+                self.star_catalog[sid]['nn_dist_arcsec'] = float(nn_dist_arcsec)
+                self.star_catalog[sid]['nn_flux_ratio'] = float(nn_flux_ratio) if nn_flux_ratio is not None else None
+                self.star_catalog[sid]['contam_ratio_84arcsec'] = float(contam_ratio_84) if contam_ratio_84 is not None else None
+                self.star_catalog[sid]['contam_ratio_126arcsec'] = float(contam_ratio_126) if contam_ratio_126 is not None else None
+        except Exception:
+            pass
 
         # Save reference
         self.reference_stars = sources
@@ -649,95 +775,228 @@ class StreamingProcessor:
 
     def _forced_photometry(self, data, median, std, gain, metadata, wcs, epoch_idx):
         """Perform forced photometry at reference star positions."""
-        photometry_records = []
+        def centroid_com(x0: float, y0: float, *, half_size: int = 4) -> tuple[float, float]:
+            """Simple center-of-mass centroid around (x0,y0) for diagnostics (does not recenter photometry)."""
+            try:
+                ny, nx = data.shape
+                cx = int(round(float(x0)))
+                cy = int(round(float(y0)))
+                x1 = max(0, cx - int(half_size))
+                x2 = min(nx, cx + int(half_size) + 1)
+                y1 = max(0, cy - int(half_size))
+                y2 = min(ny, cy + int(half_size) + 1)
+                sub = data[y1:y2, x1:x2]
+                if sub.size == 0:
+                    return float(x0), float(y0)
+                w = sub - float(np.nanmedian(sub))
+                w = np.clip(w, 0.0, None)
+                s = float(np.nansum(w))
+                if not np.isfinite(s) or s <= 0:
+                    return float(x0), float(y0)
+                yy, xx = np.indices(sub.shape)
+                xc = float((xx * w).sum() / s) + float(x1)
+                yc = float((yy * w).sum() / s) + float(y1)
+                return xc, yc
+            except Exception:
+                return float(x0), float(y0)
 
-        for star_id, star_info in self.star_catalog.items():
-            ra, dec = star_info['ra'], star_info['dec']
+        star_items = list(self.star_catalog.items())
+        if not star_items:
+            return []
 
-            # Convert RA/Dec to pixel coordinates for this epoch
-            use_ref_coords = False
-            if wcs and ra is not None and dec is not None:
-                try:
-                    pixel_coords = wcs.all_world2pix([[ra, dec]], 0)
-                    x, y = pixel_coords[0]
-                    # Check for NaN or out-of-bounds (WCS can give bad coords)
-                    if np.isnan(x) or np.isnan(y):
-                        use_ref_coords = True
-                    elif x < 0 or y < 0 or x >= data.shape[1] or y >= data.shape[0]:
-                        # WCS gave out-of-bounds coords, try ref coords
-                        use_ref_coords = True
-                except:
-                    use_ref_coords = True
-            else:
-                use_ref_coords = True
+        def _safe_float(v):
+            try:
+                return float(v)
+            except (TypeError, ValueError):
+                return float("nan")
 
-            if use_ref_coords:
-                x, y = star_info['ref_x'], star_info['ref_y']
+        n_stars = len(star_items)
+        star_ids = [sid for sid, _ in star_items]
+        ra = np.asarray([_safe_float(info.get('ra')) for _, info in star_items], dtype=float)
+        dec = np.asarray([_safe_float(info.get('dec')) for _, info in star_items], dtype=float)
+        ref_x = np.asarray([_safe_float(info.get('ref_x')) for _, info in star_items], dtype=float)
+        ref_y = np.asarray([_safe_float(info.get('ref_y')) for _, info in star_items], dtype=float)
 
-            # Check bounds (after potential fallback to ref coords)
-            if x < 0 or y < 0 or x >= data.shape[1] or y >= data.shape[0]:
-                record = {
-                    'star_id': star_id,
-                    'epoch': epoch_idx,
-                    'btjd': metadata.get('btjd_mid'),  # BTJD mid-time
-                    'flux': np.nan,
-                    'flux_error': np.nan,
-                    'quality': 3,  # Outside image
-                    'x': float(x),
-                    'y': float(y)
-                }
-                photometry_records.append(record)
-                continue
+        x = np.full(n_stars, np.nan, dtype=float)
+        y = np.full(n_stars, np.nan, dtype=float)
 
-            # Perform photometry with LOCAL background estimation (annulus)
-            aperture = CircularAperture([(x, y)], r=DEFAULT_APERTURE_RADIUS)
-            annulus = CircularAnnulus([(x, y)], r_in=ANNULUS_R_IN, r_out=ANNULUS_R_OUT)
+        # Use WCS where possible, then fall back to reference coordinates.
+        use_ref_coords = np.ones(n_stars, dtype=bool)
+        can_use_wcs = (wcs is not None) & np.isfinite(ra) & np.isfinite(dec)
+        batch_wcs_attempted = bool(np.any(can_use_wcs))
+        batch_wcs_failed = False
+        per_star_fallback_attempts = 0
+        per_star_fallback_success = 0
+        if np.any(can_use_wcs):
+            idx_wcs = np.flatnonzero(can_use_wcs)
+            try:
+                world = np.column_stack((ra[idx_wcs], dec[idx_wcs]))
+                pixel_coords = np.asarray(wcs.all_world2pix(world, 0), dtype=float)
+                x[idx_wcs] = pixel_coords[:, 0]
+                y[idx_wcs] = pixel_coords[:, 1]
 
-            # Measure in both apertures
+                wcs_ok = (
+                    np.isfinite(x[idx_wcs]) &
+                    np.isfinite(y[idx_wcs]) &
+                    (x[idx_wcs] >= 0) & (y[idx_wcs] >= 0) &
+                    (x[idx_wcs] < data.shape[1]) & (y[idx_wcs] < data.shape[0])
+                )
+                use_ref_coords[idx_wcs] = ~wcs_ok
+            except Exception:
+                batch_wcs_failed = True
+                per_star_fallback_attempts = int(idx_wcs.size)
+                # Match old per-star behavior: if a batch WCS conversion fails for any
+                # reason, fall back to per-star conversion rather than disabling WCS
+                # for the whole epoch.
+                for j in idx_wcs:
+                    try:
+                        px = np.asarray(wcs.all_world2pix([[ra[j], dec[j]]], 0), dtype=float)
+                        xj, yj = float(px[0][0]), float(px[0][1])
+                        ok = (
+                            np.isfinite(xj) and np.isfinite(yj) and
+                            (0 <= xj < data.shape[1]) and (0 <= yj < data.shape[0])
+                        )
+                        if ok:
+                            x[j] = xj
+                            y[j] = yj
+                            use_ref_coords[j] = False
+                            per_star_fallback_success += 1
+                        else:
+                            use_ref_coords[j] = True
+                    except Exception:
+                        use_ref_coords[j] = True
+
+        wcs_eligible_star_count = int(np.count_nonzero(can_use_wcs))
+        wcs_eligible_ref_fallback_count = int(np.count_nonzero(can_use_wcs & use_ref_coords))
+        with self._telemetry_lock:
+            if batch_wcs_attempted:
+                self.wcs_batch_attempt_epochs += 1
+            if batch_wcs_failed:
+                self.wcs_batch_failed_epochs += 1
+            self.wcs_batch_fail_fallback_star_attempts += per_star_fallback_attempts
+            self.wcs_batch_fail_fallback_star_success += per_star_fallback_success
+            self.wcs_eligible_stars += wcs_eligible_star_count
+            self.wcs_eligible_ref_fallback_stars += wcs_eligible_ref_fallback_count
+
+        if np.any(use_ref_coords):
+            x[use_ref_coords] = ref_x[use_ref_coords]
+            y[use_ref_coords] = ref_y[use_ref_coords]
+
+        in_bounds = (
+            np.isfinite(x) & np.isfinite(y) &
+            (x >= 0) & (y >= 0) &
+            (x < data.shape[1]) & (y < data.shape[0])
+        )
+
+        # Initialize outputs (quality=3 means outside image, same as previous behavior).
+        flux = np.full(n_stars, np.nan, dtype=float)
+        flux_error = np.full(n_stars, np.nan, dtype=float)
+        quality = np.full(n_stars, 3, dtype=int)
+        x_centroid = np.full(n_stars, np.nan, dtype=float)
+        y_centroid = np.full(n_stars, np.nan, dtype=float)
+        dx_ref = np.full(n_stars, np.nan, dtype=float)
+        dy_ref = np.full(n_stars, np.nan, dtype=float)
+
+        aperture_radii = sorted({2.0, float(DEFAULT_APERTURE_RADIUS), 4.0})
+        extra_arrays = {}
+        for r in aperture_radii:
+            key = f"r{int(round(r))}"
+            extra_arrays[f"flux_{key}"] = np.full(n_stars, np.nan, dtype=float)
+            extra_arrays[f"flux_error_{key}"] = np.full(n_stars, np.nan, dtype=float)
+
+        valid_idx = np.flatnonzero(in_bounds)
+        if valid_idx.size > 0:
+            positions = np.column_stack((x[valid_idx], y[valid_idx]))
+            exposure_time = float(metadata.get('exposure_time', 1) or 1)
+
+            # Main aperture + annulus photometry in batch.
+            aperture = CircularAperture(positions, r=DEFAULT_APERTURE_RADIUS)
+            annulus = CircularAnnulus(positions, r_in=ANNULUS_R_IN, r_out=ANNULUS_R_OUT)
+
             phot = aperture_photometry(data, aperture)
             ann_phot = aperture_photometry(data, annulus)
 
-            # Calculate local background per pixel from annulus
-            annulus_area = annulus.area_overlap(data)
-            local_bkg_per_pixel = ann_phot['aperture_sum'][0] / annulus_area if annulus_area > 0 else median
+            ap_sum_raw = np.asarray(phot['aperture_sum'], dtype=float)
+            ann_sum = np.asarray(ann_phot['aperture_sum'], dtype=float)
+            ann_area = np.asarray(annulus.area_overlap(data), dtype=float)
+            if ann_area.ndim == 0:
+                ann_area = np.full(valid_idx.size, float(ann_area), dtype=float)
 
-            # Subtract local background from aperture
+            local_bkg_per_pixel = np.where(ann_area > 0, ann_sum / ann_area, float(median))
+
             n_pixels = np.pi * DEFAULT_APERTURE_RADIUS ** 2
-            aperture_sum = phot['aperture_sum'][0] - (local_bkg_per_pixel * n_pixels)
+            aperture_sum = ap_sum_raw - (local_bkg_per_pixel * n_pixels)
 
-            # Calculate flux and error (both in counts/second)
-            exposure_time = metadata.get('exposure_time', 1) or 1
-            flux = aperture_sum / exposure_time
-
-            # CCD noise model with correct dimensions:
-            # - Signal Poisson: aperture_sum / gain (ADU → electrons variance)
-            # - Background Poisson: n_pixels * local_bkg / gain (using LOCAL background)
-            # - Read noise: n_pixels * (std/gain)² (not n_pixels²!)
-            # Error in counts, then convert to counts/second
+            flux_valid = aperture_sum / exposure_time
             flux_error_counts = np.sqrt(
-                abs(aperture_sum) / gain +
+                np.abs(aperture_sum) / gain +
                 n_pixels * local_bkg_per_pixel / gain +
                 n_pixels * (std / gain) ** 2
             )
-            flux_error = flux_error_counts / exposure_time
+            flux_error_valid = flux_error_counts / exposure_time
 
-            # Quality flag
-            quality = 0
-            if aperture_sum < 0:
-                quality = 2
-            elif min(x, y, data.shape[1] - x, data.shape[0] - y) < DEFAULT_APERTURE_RADIUS * 2:
-                quality = 1
+            # Quality: 0=good, 1=edge, 2=negative flux.
+            quality_valid = np.zeros(valid_idx.size, dtype=int)
+            neg_mask = aperture_sum < 0
+            quality_valid[neg_mask] = 2
+            edge_dist = np.minimum.reduce([
+                x[valid_idx],
+                y[valid_idx],
+                data.shape[1] - x[valid_idx],
+                data.shape[0] - y[valid_idx],
+            ])
+            edge_mask = edge_dist < (DEFAULT_APERTURE_RADIUS * 2)
+            quality_valid[edge_mask & (~neg_mask)] = 1
 
+            flux[valid_idx] = flux_valid
+            flux_error[valid_idx] = flux_error_valid
+            quality[valid_idx] = quality_valid
+
+            # Multi-aperture diagnostics in batch (same radii/columns as before).
+            for r in aperture_radii:
+                ap = CircularAperture(positions, r=float(r))
+                ph = aperture_photometry(data, ap)
+                ap_sum = np.asarray(ph['aperture_sum'], dtype=float)
+                n_pix = np.pi * float(r) ** 2
+                ap_sum = ap_sum - (local_bkg_per_pixel * n_pix)
+                f = ap_sum / exposure_time
+                ferr_counts = np.sqrt(
+                    np.abs(ap_sum) / gain +
+                    n_pix * local_bkg_per_pixel / gain +
+                    n_pix * (std / gain) ** 2
+                )
+                ferr = ferr_counts / exposure_time
+                key = f"r{int(round(r))}"
+                extra_arrays[f"flux_{key}"][valid_idx] = f
+                extra_arrays[f"flux_error_{key}"][valid_idx] = ferr
+
+            # Centroid diagnostics (kept as-is for scientific consistency).
+            for idx in valid_idx:
+                x_cent, y_cent = centroid_com(float(x[idx]), float(y[idx]))
+                x_centroid[idx] = float(x_cent)
+                y_centroid[idx] = float(y_cent)
+                dx_ref[idx] = float(x_cent - ref_x[idx])
+                dy_ref[idx] = float(y_cent - ref_y[idx])
+
+        photometry_records = []
+        btjd = metadata.get('btjd_mid')
+        for i, star_id in enumerate(star_ids):
             record = {
                 'star_id': star_id,
                 'epoch': epoch_idx,
-                'btjd': metadata.get('btjd_mid'),  # BTJD mid-time
-                'flux': float(flux),
-                'flux_error': float(flux_error),
-                'quality': int(quality),
-                'x': float(x),
-                'y': float(y)
+                'btjd': btjd,  # BTJD mid-time
+                'flux': float(flux[i]),
+                'flux_error': float(flux_error[i]),
+                'quality': int(quality[i]),
+                'x': float(x[i]),
+                'y': float(y[i]),
+                'x_centroid': float(x_centroid[i]),
+                'y_centroid': float(y_centroid[i]),
+                'dx_ref': float(dx_ref[i]),
+                'dy_ref': float(dy_ref[i]),
             }
+            for key, arr in extra_arrays.items():
+                record[key] = float(arr[i])
             photometry_records.append(record)
 
         return photometry_records
@@ -840,7 +1099,8 @@ class StreamingProcessor:
                                 result = future.result()
                                 self._handle_result(file_info, result)
                             except Exception as e:
-                                self.display.update(success=False, error=str(e))
+                                self.display.update(success=False, error=str(e),
+                                                    filename=file_info.get('filename'))
 
         except KeyboardInterrupt:
             print("\n\n  Interrupted! Saving checkpoint...")
@@ -873,11 +1133,14 @@ class StreamingProcessor:
                 self.display.update(
                     success=True,
                     stars=len(self.star_catalog),
-                    measurements=result.get('n_measurements', 0)
+                    measurements=result.get('n_measurements', 0),
+                    filename=file_info.get('filename'),
+                    date_obs=result.get('metadata', {}).get('date_obs'),
                 )
             else:
                 error_msg = result.get('error', 'Unknown error') if result else 'No result'
-                self.display.update(success=False, error=error_msg)
+                self.display.update(success=False, error=error_msg,
+                                    filename=file_info.get('filename'))
 
             # Save checkpoint every 50 files (less often for parallel)
             self._checkpoint_counter += 1
@@ -917,7 +1180,8 @@ class StreamingProcessor:
 
         # Log failures
         for r in failed:
-            self.display.update(success=False, error=f"Download failed: {r.error}")
+            self.display.update(success=False, error=f"Download failed: {r.error}",
+                                filename=r.file_info.get('filename') if r.file_info else None)
 
         if not downloaded:
             return
@@ -935,7 +1199,8 @@ class StreamingProcessor:
                     result = future.result()
                     self._handle_result(file_info, result)
                 except Exception as e:
-                    self.display.update(success=False, error=str(e))
+                    self.display.update(success=False, error=str(e),
+                                        filename=file_info.get('filename'))
                 finally:
                     # Clean up file
                     try:
@@ -1312,7 +1577,8 @@ class StreamingProcessor:
                                             with self._results_lock:
                                                 self.display.update(
                                                     success=False,
-                                                    error=f"Download {filename}: {e} (after {max_retries} retries)"
+                                                    error=f"Download {filename}: {e} (after {max_retries} retries)",
+                                                    filename=filename,
                                                 )
 
                                     except Exception as e:
@@ -1325,7 +1591,8 @@ class StreamingProcessor:
                                         with self._results_lock:
                                             self.display.update(
                                                 success=False,
-                                                error=f"Download {filename}: {e}"
+                                                error=f"Download {filename}: {e}",
+                                                filename=filename,
                                             )
                                         return
 
@@ -1358,7 +1625,8 @@ class StreamingProcessor:
                                 self._handle_result(file_info, result)
                             except Exception as e:
                                 with self._results_lock:
-                                    self.display.update(success=False, error=str(e))
+                                    self.display.update(success=False, error=str(e),
+                                                        filename=file_info.get('filename'))
                             finally:
                                 # Always delete temp file
                                 try:
@@ -1446,10 +1714,23 @@ class StreamingProcessor:
         for _, row in valid.iterrows():
             star_id = row['star_id']
             tic = row.get('tic')
+            tic_sep = row.get('tic_sep_arcsec')
             if tic is not None:
                 self.star_catalog[star_id]['tic_id'] = str(tic)
+                if tic_sep is not None:
+                    self.star_catalog[star_id]['tic_separation_arcsec'] = float(tic_sep)
             else:
                 self.star_catalog[star_id]['tic_id'] = star_id  # Keep internal ID
+
+        # Save a lightweight mapping CSV (used by plotting/scripts when parquet lacks tic_id).
+        try:
+            tic_map_path = self.output_dir / f"{self.session_id}_tic_ids.csv"
+            out = valid[['star_id', 'tic', 'tic_sep_arcsec']].copy()
+            out = out.rename(columns={'tic': 'tic_id', 'tic_sep_arcsec': 'tic_separation_arcsec'})
+            out.to_csv(tic_map_path, index=False)
+            print(f"Saved TIC map: {tic_map_path}")
+        except Exception as e:
+            print(f"Warning: failed to save TIC map CSV: {e}")
 
         # Save updated catalog
         self.save_checkpoint()
@@ -1520,6 +1801,30 @@ class StreamingProcessor:
             'n_measurements': len(self.photometry_records),
             'files_processed': len(self.processed_files),
         }
+
+        batch_fail_rate = (
+            float(self.wcs_batch_failed_epochs / self.wcs_batch_attempt_epochs)
+            if self.wcs_batch_attempt_epochs > 0 else 0.0
+        )
+        per_star_recovery_rate = (
+            float(self.wcs_batch_fail_fallback_star_success / self.wcs_batch_fail_fallback_star_attempts)
+            if self.wcs_batch_fail_fallback_star_attempts > 0 else 0.0
+        )
+        wcs_ref_fallback_rate = (
+            float(self.wcs_eligible_ref_fallback_stars / self.wcs_eligible_stars)
+            if self.wcs_eligible_stars > 0 else 0.0
+        )
+        summary.update({
+            'wcs_batch_attempt_epochs': int(self.wcs_batch_attempt_epochs),
+            'wcs_batch_failed_epochs': int(self.wcs_batch_failed_epochs),
+            'wcs_batch_failure_rate': batch_fail_rate,
+            'wcs_batch_fail_fallback_star_attempts': int(self.wcs_batch_fail_fallback_star_attempts),
+            'wcs_batch_fail_fallback_star_success': int(self.wcs_batch_fail_fallback_star_success),
+            'wcs_batch_fail_fallback_star_success_rate': per_star_recovery_rate,
+            'wcs_eligible_stars': int(self.wcs_eligible_stars),
+            'wcs_eligible_ref_fallback_stars': int(self.wcs_eligible_ref_fallback_stars),
+            'wcs_eligible_ref_fallback_rate': wcs_ref_fallback_rate,
+        })
 
         # Check for btjd column (new) or mjd column (legacy)
         time_col = 'btjd' if 'btjd' in df.columns else 'mjd' if 'mjd' in df.columns else None
